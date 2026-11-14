@@ -11,6 +11,7 @@ class Mod:
     def isSeparator(s): return s.sep
     def isOverwrite(s): return False
     def isBackup(s): return False
+    def isForeign(s): return False
     def absolutePath(s): return s.p
     def version(s): return mobase.VersionInfo("1.0")
     def nexusId(s): return 42
@@ -28,6 +29,8 @@ class ModList:
         for n in s.order:
             p=os.path.join(root,n); os.makedirs(p,exist_ok=True)
             if n=="SSE Engine Fixes": open(os.path.join(p,"EngineFixes.esp"),"w").close()
+            if n in ("SKSE","SSE Engine Fixes"): open(os.path.join(p,"engine.ini"),"w").close()
+            if n=="SKSE": open(os.path.join(p,"skse64_loader.exe"),"w").close()
             s.mods[n]=Mod(n,p,n.endswith("_separator"))
     def allMods(s): return list(s.order)
     def allModsByProfilePriority(s, profile=None): return list(s.order)
@@ -39,6 +42,12 @@ class ModList:
         return len(names)
     def setPriority(s,n,p):
         s.order.remove(n); s.order.insert(p,n); return True
+    def renameMod(s,mod,new):
+        old=mod.name(); i=s.order.index(old); newp=os.path.join(os.path.dirname(mod.absolutePath()),new)
+        os.rename(mod.absolutePath(),newp); m=Mod(new,newp,new.endswith("_separator"))
+        s.order[i]=new; del s.mods[old]; s.mods[new]=m
+        if old in s.active: s.active.discard(old); s.active.add(new)
+        return m
 
 class PluginList:
     def __init__(s): s.order=["Skyrim.esm","Update.esm","EngineFixes.esp"]; s.st={p:mobase.PluginState.ACTIVE for p in s.order}
@@ -70,6 +79,10 @@ class Org:
     def __init__(s, root):
         s.root=root; s.ml=ModList(os.path.join(root,"mods")); s.pl=PluginList(); s.refreshed=0; s.started=[]
         os.makedirs(os.path.join(root,"overwrite"),exist_ok=True)
+        os.makedirs(os.path.join(root,"logs"),exist_ok=True)
+        with open(os.path.join(root,"logs","mo_interface.log"),"w") as f:
+            f.write("\n".join(f"[I] line {i}" for i in range(10))+"\n[W] plugin warning here\n")
+        s.pending=[]; s.on_refresh=[]
         with open(os.path.join(root,"ModOrganizer.ini"),"w") as f:
             f.write("[customExecutables]\nsize=2\n1\\title=SSEEdit\n1\\binary=H:/Tools/SSEEdit/SSEEdit.exe\n1\\arguments=\n1\\workingDirectory=\n2\\title=LOOT\n2\\binary=H:/Tools/LOOT/LOOT.exe\n2\\arguments=\n2\\workingDirectory=\n")
     def modList(s): return s.ml
@@ -85,9 +98,19 @@ class Org:
     def profilePath(s): return os.path.join(s.root,"profiles","Step")
     def pluginSetting(s,p,k): return {"port": 52599, "extra_instructions": "Follow the Step guide."}[k]
     def onUserInterfaceInitialized(s,cb): return True
-    def getFileOrigins(s,p): return ["SSE Engine Fixes","SKSE"] if p.lower()=="engine.ini" else []
+    def getFileOrigins(s,p):
+        return [n for n in reversed(s.ml.order) if n in s.ml.active and os.path.exists(os.path.join(s.ml.mods[n].absolutePath(),p))]
     def resolvePath(s,p): return "/x/"+p
-    def refresh(s,save=True): s.refreshed+=1
+    def refresh(s,save=True):
+        s.refreshed+=1
+        for n in s.pending:
+            p=os.path.join(s.modsPath(),n); s.ml.order.append(n); s.ml.mods[n]=Mod(n,p,n.endswith("_separator"))
+        s.pending=[]
+        cbs, s.on_refresh = s.on_refresh, []
+        for cb in cbs: cb()
+    def onNextRefresh(s,cb,immediate=True): s.on_refresh.append(cb); return True
+    def createMod(s,name):
+        p=os.path.join(s.modsPath(),str(name)); os.makedirs(p); s.pending.append(str(name)); return Mod(str(name),p,str(name).endswith("_separator"))
     def startApplication(s,exe,args=[],cwd=""): s.started.append(exe); return 1234
     def installMod(s,path,name=""): return None
 
@@ -147,7 +170,7 @@ def client():
         except urllib.error.HTTPError as e: code = e.code
         check("browser Origin -> 403", code==403)
         st,r = rpc("tools/list"); names=[t["name"] for t in r["result"]["tools"]]
-        check("tools/list has 15 tools", len(names)==15)
+        check("tools/list has 19 tools", len(names)==19)
         e,t = call("get_status"); s=json.loads(t)
         check("get_status counts", not e and s["mods"]=={"total":4,"enabled":3,"separators":2} and s["plugins"]["enabled"]==3)
         e,t = call("list_mods", {"separator":"Fixes"}); print(t)
@@ -157,11 +180,29 @@ def client():
         e,t = call("get_mod", {"name":"sse engine fixes","list_files":True})
         check("get_mod case-insensitive + plugins", not e and json.loads(t)["plugins"]==["EngineFixes.esp"])
         e,t = call("get_mod", {"name":"nope"}); check("get_mod unknown -> isError", e)
+        e,t = call("get_mod_conflicts", {"name":"SSE Engine Fixes"}); c=json.loads(t)
+        check("conflicts: Engine Fixes overrides SKSE", not e and c["overrides"][0]["mod"]=="SKSE" and c["overrides"][0]["examples"]==["engine.ini"])
+        e,t = call("get_mod_conflicts", {"name":"SKSE"}); c=json.loads(t)
+        check("conflicts: SKSE overridden by Engine Fixes, 1 unique file", c["overridden_by"][0]["mod"]=="SSE Engine Fixes" and c["files_without_conflict"]==1)
+        e,t = call("get_mod_conflicts", {"name":"Unused"}); check("conflicts of disabled mod refused", e and "disabled" in t)
+        e,t = call("read_log", {"lines":3}); check("read_log tail", not e and t.splitlines()[-1]=="[W] plugin warning here" and "last 3 of 11" in t)
+        e,t = call("read_log", {"contains":"warning"}); check("read_log filter", "last 1 of 1" in t)
+        e,t = call("read_log", {"log":"usvfs"}); check("read_log no usvfs -> isError", e)
+        before=org.refreshed
+        e,t = call("refresh"); check("refresh waits for completion", not e and t=="MO2 refreshed." and org.refreshed==before+1)
+        e,t = call("create_separator", {"name":"Testing Area","after":"Address Library"}); r=json.loads(t)
+        check("create separator placed after mod", not e and org.ml.order[3]=="Testing Area_separator" and org.ml.mods["Testing Area_separator"].isSeparator())
+        e,t = call("create_separator", {"name":"Testing Area"}); check("duplicate separator refused", e and "already exists" in t)
+        e,t = call("create_separator", {"name":"bad/name"}); check("bad separator name refused", e and "Invalid name" in t)
+        e,t = call("rename_mod", {"name":"Testing Area","new_name":"Test Zone"}); r=json.loads(t)
+        check("rename separator keeps suffix", not e and r["new"]=="Test Zone_separator" and org.ml.order[3]=="Test Zone_separator")
+        e,t = call("rename_mod", {"name":"Unused","new_name":"SKSE"}); check("rename onto existing name refused", e and "already exists" in t)
+        e,t = call("set_mod_priority", {"name":"Test Zone","priority":6}); check("move separator to end", org.ml.order[-1]=="Test Zone_separator")
         e,t = call("file_origins", {"path":"Data/engine.ini"}); check("file_origins", json.loads(t)["winner"]=="SSE Engine Fixes")
         e,t = call("list_executables"); check("list_executables", [x["title"] for x in json.loads(t)]==["SSEEdit","LOOT"])
         e,t = call("set_mods_enabled", {"names":["Unused"],"enabled":True}); check("enable mod", json.loads(t)=={"Unused":True})
         e,t = call("set_mod_priority", {"name":"Unused","after":"Extenders"}); check("move after separator", org.ml.order[1]=="Unused")
-        e,t = call("set_mod_priority", {"name":"Unused","after":"SSE Engine Fixes"}); check("move after mod (downwards)", org.ml.order[-1]=="Unused")
+        e,t = call("set_mod_priority", {"name":"Unused","after":"SSE Engine Fixes"}); check("move after mod (downwards)", org.ml.order.index("Unused")==org.ml.order.index("SSE Engine Fixes")+1)
         e,t = call("set_plugins_enabled", {"names":["enginefixes.esp"],"enabled":False}); check("disable plugin", json.loads(t)=={"EngineFixes.esp":False})
         st,r = rpc("tools/call", {"name":"set_mods_enabled","arguments":{"names":"x","enabled":True}})
         check("type validation -> -32602", r.get("error",{}).get("code")==-32602)
@@ -180,7 +221,7 @@ def client():
         os.makedirs(org.downloadsPath(),exist_ok=True); open(os.path.join(org.downloadsPath(),"a.7z"),"w").close()
         e,t = call("install_mod", {"archive":"a.7z"}); check("install declined in dialog -> isError", e and "declined" in t)
         e,t = call("install_mod", {"archive":"missing.7z"}); check("install missing archive", e and "not found" in t)
-        cache=json.loads(P.TOOLS_CACHE.read_text()); check("tools cache written", len(cache)==15)
+        cache=json.loads(P.TOOLS_CACHE.read_text()); check("tools cache written", len(cache)==19)
     except Exception as ex:
         import traceback; traceback.print_exc(); failures.append(repr(ex))
     finally:

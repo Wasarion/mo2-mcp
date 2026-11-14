@@ -1,8 +1,15 @@
-"""The MO2 tools exposed over MCP. Handlers run on MO2's GUI thread unless marked otherwise."""
+"""The MO2 tools exposed over MCP. Handlers run on MO2's GUI thread unless marked otherwise.
+
+create_separator, rename_mod, get_mod_conflicts, read_log and the wait-for-refresh helper follow the
+approach of Antiarc123's "MCP - MO2" plugin (Nexus Mods site mod 2549, GPL-3.0-or-later).
+"""
 
 from __future__ import annotations
 
+import collections
 import os
+import re
+import threading
 from typing import Any, Callable
 
 import mobase
@@ -12,10 +19,19 @@ from .mcp import Tool, ToolError
 from .procs import RunTracker
 
 MAX_WAIT = 600  # seconds one wait_for_run call may block
+REFRESH_WAIT = 120  # seconds to wait for MO2 to finish a refresh
+BAD_NAME = re.compile(r'[\\/:*?"<>|]')
 
 
 def _flag(state: Any, flag: Any) -> bool:
     return (int(state) & int(flag)) != 0
+
+
+def _check_name(name: str) -> str:
+    name = (name or "").strip()
+    if not name or BAD_NAME.search(name) or name.endswith((".", " ")) or len(name) > 200:
+        raise ToolError('Invalid name. Avoid \\ / : * ? " < > | and a trailing dot or space.')
+    return name
 
 
 class Mo2Tools:
@@ -61,6 +77,22 @@ class Mo2Tools:
 
     def _ini_path(self) -> str:
         return os.path.join(self.org.basePath(), "ModOrganizer.ini")
+
+    def _name_free(self, name: str) -> None:
+        taken = any(n.lower() == name.lower() for n in self.org.modList().allMods())
+        if taken or os.path.exists(os.path.join(self.org.modsPath(), name)):
+            raise ToolError(f"A mod or folder named '{name}' already exists.")
+
+    def _refresh_and_wait(self, timeout: float = REFRESH_WAIT) -> bool:
+        """Start a refresh and wait until MO2 has finished it. Worker threads only."""
+        done = threading.Event()
+
+        def start() -> None:
+            self.org.onNextRefresh(done.set, False)
+            self.org.refresh(True)
+
+        self.invoke(start, 60)
+        return done.wait(timeout)
 
     # -- read tools --------------------------------------------------------------
     def get_status(self, args: dict[str, Any]) -> Any:
@@ -193,6 +225,58 @@ class Mo2Tools:
             raise ToolError(f"'{rel}' is not in the virtual Data folder.")
         return {"path": rel, "winner": origins[0], "also_provided_by": origins[1:], "resolved": self.org.resolvePath(rel)}
 
+    def get_mod_conflicts(self, args: dict[str, Any]) -> Any:
+        ml = self.org.modList()
+        name = self._mod_name(args["name"])
+        mod = ml.getMod(name)
+        if mod.isSeparator():
+            raise ToolError(f"'{name}' is a separator.")
+        if not _flag(ml.state(name), mobase.ModState.ACTIVE):
+            raise ToolError(f"'{name}' is disabled. MO2 only tracks conflicts of enabled mods.")
+        examples = min(max(0, int(args.get("examples", 5))), 100)
+        root = mod.absolutePath()
+        beats: dict[str, list[str]] = collections.defaultdict(list)
+        loses: dict[str, list[str]] = collections.defaultdict(list)
+        checked = unique = 0
+        truncated = False
+        for dirpath, _dirs, files in os.walk(root):
+            for f in files:
+                rel = os.path.relpath(os.path.join(dirpath, f), root)
+                if rel.lower() == "meta.ini" or f.lower().endswith(".mohidden"):
+                    continue
+                if checked >= 50000:
+                    truncated = True
+                    break
+                checked += 1
+                origins = list(self.org.getFileOrigins(rel))
+                if name not in origins:
+                    continue
+                shown = rel.replace("\\", "/")
+                if origins[0] == name:
+                    if len(origins) == 1:
+                        unique += 1
+                    for other in origins[1:]:
+                        beats[other].append(shown)
+                else:
+                    loses[origins[0]].append(shown)
+        known = set(ml.allMods())
+
+        def summary(d: dict[str, list[str]]) -> list[dict[str, Any]]:
+            rows = sorted(d.items(), key=lambda kv: (-len(kv[1]), kv[0].lower()))
+            return [{"mod": k, "priority": ml.priority(k) if k in known else None,
+                     "files": len(v), "examples": v[:examples]} for k, v in rows]
+
+        return {
+            "mod": name,
+            "priority": ml.priority(name),
+            "files_checked": checked,
+            "truncated": truncated,
+            "files_without_conflict": unique,
+            "overrides": summary(beats),
+            "overridden_by": summary(loses),
+            "note": "Loose files only; BSA contents are not compared. 'data' means the game's own Data folder.",
+        }
+
     def list_executables(self, args: dict[str, Any]) -> Any:
         s = QSettings(self._ini_path(), QSettings.Format.IniFormat)
         out = []
@@ -210,6 +294,29 @@ class Mo2Tools:
 
     def list_runs(self, args: dict[str, Any]) -> Any:
         return [r.describe() for r in self.runs.all()] or "Nothing has been started through this plugin yet."
+
+    def read_log(self, args: dict[str, Any]) -> Any:
+        logs = os.path.join(self.invoke(self.org.basePath, 30), "logs")
+        which = args.get("log", "mo")
+        if which == "mo":
+            path = os.path.join(logs, "mo_interface.log")
+        elif which == "usvfs":
+            found = sorted((f for f in os.listdir(logs) if f.lower().startswith("usvfs")),
+                           key=lambda f: os.path.getmtime(os.path.join(logs, f))) if os.path.isdir(logs) else []
+            if not found:
+                raise ToolError("No usvfs log found.")
+            path = os.path.join(logs, found[-1])
+        else:
+            raise ToolError("log must be 'mo' or 'usvfs'.")
+        if not os.path.isfile(path):
+            raise ToolError(f"Log not found: {path}")
+        n = min(max(1, int(args.get("lines", 150))), 3000)
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+        needle = str(args.get("contains", "")).lower()
+        if needle:
+            lines = [ln for ln in lines if needle in ln.lower()]
+        return f"# {path} (last {min(n, len(lines))} of {len(lines)} lines)\n" + "\n".join(lines[-n:])
 
     # -- write tools --------------------------------------------------------------
     def set_mods_enabled(self, args: dict[str, Any]) -> Any:
@@ -253,8 +360,46 @@ class Mo2Tools:
         return {"name": name, "priority": pl.priority(name), "load_order": pl.loadOrder(name)}
 
     def refresh(self, args: dict[str, Any]) -> Any:
-        self.org.refresh(True)
-        return "Refresh started. MO2 rebuilds the mod and plugin lists in the background; wait a few seconds before reading them."
+        if self._refresh_and_wait():
+            return "MO2 refreshed."
+        return f"Refresh started but not finished after {REFRESH_WAIT} s; MO2 may still be busy."
+
+    def create_separator(self, args: dict[str, Any]) -> Any:
+        label = _check_name(args["name"]).removesuffix("_separator")
+        internal = label + "_separator"
+        if args.get("after") is not None and args.get("priority") is not None:
+            raise ToolError("Give at most one of 'priority' or 'after'.")
+
+        def create() -> None:
+            self._name_free(internal)
+            if self.org.createMod(mobase.GuessedString(internal)) is None:
+                raise ToolError("MO2 did not create the separator.")
+
+        self.invoke(create, 60)
+        if not self._refresh_and_wait():
+            return {"separator": label, "note": "Created, but MO2 is still refreshing; place it later with set_mod_priority."}
+        move = {k: args[k] for k in ("after", "priority") if args.get(k) is not None}
+        if move:
+            return self.invoke(lambda: self.set_mod_priority({"name": internal, **move}), 60) | {"separator": label}
+        return {"separator": label, "name": internal, "priority": self.invoke(lambda: self.org.modList().priority(internal), 60)}
+
+    def rename_mod(self, args: dict[str, Any]) -> Any:
+        ml = self.org.modList()
+        old = self._mod_name(args["name"])
+        mod = ml.getMod(old)
+        if mod.isOverwrite() or mod.isForeign() or mod.isBackup():
+            raise ToolError(f"'{old}' cannot be renamed (Overwrite, DLC/unmanaged, or a backup).")
+        new = _check_name(args["new_name"])
+        if mod.isSeparator() and not new.endswith("_separator"):
+            new += "_separator"
+        if new == old:
+            raise ToolError("The new name is the same as the old one.")
+        if new.lower() != old.lower():
+            self._name_free(new)
+        renamed = ml.renameMod(mod, new)
+        if renamed is None:
+            raise ToolError("MO2 did not rename the mod (see read_log).")
+        return {"old": old, "new": renamed.name(), "priority": ml.priority(renamed.name())}
 
     def run_executable(self, args: dict[str, Any]) -> Any:
         exe = str(args["executable"])
@@ -296,8 +441,7 @@ class Mo2Tools:
         self.runs.wait(run, timeout)
         result = run.describe()
         if not run.running and args.get("refresh", True):
-            self.invoke(lambda: self.org.refresh(True), 60)
-            result["refreshed"] = True
+            result["refreshed"] = self._refresh_and_wait()
         elif run.running:
             result["note"] = "Still running; call wait_for_run again."
         return result
@@ -318,6 +462,11 @@ class Mo2Tools:
                  {"name": s, "list_files": b, "max_files": {"type": "integer"}}, self.get_mod, ["name"]),
             Tool("file_origins", "Which mod wins a file in the virtual Data folder, and which mods it overrides. Path relative to Data, e.g. 'meshes/x.nif'.",
                  {"path": s}, self.file_origins, ["path"]),
+            Tool("get_mod_conflicts", "Loose-file conflicts of one enabled mod: which mods it overrides and which override it, with example files.",
+                 {"name": s, "examples": {"type": "integer"}}, self.get_mod_conflicts, ["name"], timeout=180),
+            Tool("read_log", "Last lines of MO2's log ('mo', default) or the newest usvfs log ('usvfs'), optionally only lines containing a text.",
+                 {"log": {"type": "string", "enum": ["mo", "usvfs"]}, "lines": {"type": "integer"}, "contains": s},
+                 self.read_log, main_thread=False),
             Tool("list_executables", "Executables configured in MO2 (titles usable with run_executable).",
                  {}, self.list_executables),
             Tool("list_runs", "Programs started with run_executable and their status.",
@@ -330,8 +479,13 @@ class Mo2Tools:
                  {"names": names, "enabled": b}, self.set_plugins_enabled, ["names", "enabled"], writes=True),
             Tool("set_plugin_priority", "Move a plugin to a priority (position in the right pane).",
                  {"name": s, "priority": {"type": "integer"}}, self.set_plugin_priority, ["name", "priority"], writes=True),
-            Tool("refresh", "Refresh MO2 (like F5), e.g. after a tool wrote files.",
-                 {}, self.refresh, writes=True),
+            Tool("refresh", "Refresh MO2 (like F5) and wait until it has finished, e.g. after a tool wrote files.",
+                 {}, self.refresh, writes=True, main_thread=False, timeout=REFRESH_WAIT + 70),
+            Tool("create_separator", "Create a separator; optionally place it with 'after' (below a mod/separator) or 'priority'.",
+                 {"name": s, "after": s, "priority": {"type": "integer"}}, self.create_separator, ["name"],
+                 writes=True, main_thread=False, timeout=REFRESH_WAIT + 140),
+            Tool("rename_mod", "Rename a mod or separator (a separator keeps its separator status).",
+                 {"name": s, "new_name": s}, self.rename_mod, ["name", "new_name"], writes=True),
             Tool("run_executable", "Start an MO2 executable by title (e.g. 'SSEEdit', 'LOOT') with the VFS. Returns at once with a run_id. Optional args replace the configured arguments.",
                  {"executable": s, "args": names, "cwd": s}, self.run_executable, ["executable"], writes=True),
             Tool("wait_for_run", f"Wait (max {MAX_WAIT} s per call) for a started program to finish; refreshes MO2 afterwards unless refresh=false.",
