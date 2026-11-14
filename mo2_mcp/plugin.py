@@ -21,6 +21,7 @@ from .mcp import McpServer, Tool, ToolError
 from .procs import RunTracker
 from .tools import Mo2Tools
 
+# MO2's log handler prints the raw message without %-formatting, so log with f-strings.
 log = logging.getLogger("mo2_mcp")
 
 VERSION = "0.2.0"
@@ -75,7 +76,7 @@ class McpPlugin(mobase.IPlugin):
         try:
             self.start()
         except OSError as e:
-            log.error("Claude MCP: could not start server: %s", e)
+            log.error(f"Claude MCP: could not start server: {e}")
         return True
 
     # -- server ------------------------------------------------------------------
@@ -121,7 +122,7 @@ class McpPlugin(mobase.IPlugin):
         threading.Thread(target=self._httpd.serve_forever, name="mo2-mcp", daemon=True).start()
         _write_json(CONNECTION_FILE, {"port": port, "token": token, "version": VERSION})
         _write_json(TOOLS_CACHE, server.tool_list())
-        log.info("Claude MCP server listening on 127.0.0.1:%d", port)
+        log.info(f"Claude MCP server listening on 127.0.0.1:{port}")
 
     def stop(self) -> None:
         if self._httpd is not None:
@@ -137,7 +138,7 @@ def _make_handler(server: McpServer, token: str, port: int) -> type[BaseHTTPRequ
         protocol_version = "HTTP/1.1"
 
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
-            log.debug("http: " + format, *args)
+            log.debug("http: " + (format % args))
 
         def _send(self, code: int, body: bytes = b"") -> None:
             self.send_response(code)
