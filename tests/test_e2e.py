@@ -175,6 +175,8 @@ def client():
         before=org.refreshed
         e,t = call("wait_for_run", {"run_id":run["run_id"],"timeout_seconds":5}); r2=json.loads(t)
         check("wait finished + refresh", r2["status"]=="finished" and r2["exit_code"]==0 and org.refreshed==before+1)
+        e,t = call("run_executable", {"executable":"LOOT"})
+        check("run by exact-case title", not e and org.started==["SSEEdit","LOOT"])
         os.makedirs(org.downloadsPath(),exist_ok=True); open(os.path.join(org.downloadsPath(),"a.7z"),"w").close()
         e,t = call("install_mod", {"archive":"a.7z"}); check("install declined in dialog -> isError", e and "declined" in t)
         e,t = call("install_mod", {"archive":"missing.7z"}); check("install missing archive", e and "not found" in t)
