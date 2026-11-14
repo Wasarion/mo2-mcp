@@ -260,8 +260,11 @@ class Mo2Tools:
         exe = str(args["executable"])
         exe_args = [str(a) for a in args.get("args", [])]
         known = {e["title"].lower(): e["title"] for e in self.list_executables({})}
-        title = known.get(exe.lower(), exe)
-        if title == exe and not os.path.isabs(exe):
+        if exe.lower() in known:
+            title = known[exe.lower()]
+        elif os.path.isabs(exe):
+            title = exe
+        else:
             raise ToolError(f"'{exe}' is not an MO2 executable. Known: {', '.join(known.values())}")
         handle = self.org.startApplication(title, exe_args, str(args.get("cwd", "")))
         if not handle or handle in (-1, 0xFFFFFFFFFFFFFFFF):
