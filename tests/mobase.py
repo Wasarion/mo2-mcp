@@ -12,3 +12,5 @@ class VersionInfo:
 class PluginSetting:
     def __init__(self,k,d,v): self.key=k; self.default_value=v
 class IOrganizer: pass
+class GuessedString(str):
+    pass

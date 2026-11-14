@@ -4,7 +4,7 @@ An [MCP](https://modelcontextprotocol.io) server that runs **inside Mod Organize
 
 No screenshots, no clicking, no extra runtimes: the plugin uses MO2's own Python and the Python standard library, and the bridge is a PowerShell script that ships with Windows.
 
-> Status: early (v0.1.0). Tested on MO2 2.5.2 with Skyrim Special Edition. Feedback and pull requests welcome.
+> Status: early (v0.2.0). Tested on MO2 2.5.2 with Skyrim Special Edition. Feedback and pull requests welcome.
 
 ## How it works
 
@@ -25,10 +25,13 @@ AI client ⇄ (stdio) ⇄ bridge.ps1 ⇄ (HTTP, 127.0.0.1 + token) ⇄ mo2_mcp p
 | `list_plugins` | Right pane with load order, flags (master/light/medium/no records) and providing mod |
 | `get_mod` | Version, Nexus id, notes, plugins and (optionally) file list of one mod |
 | `file_origins` | Which mod wins a file in the virtual Data folder, and which it overrides |
+| `get_mod_conflicts` | Loose-file conflicts of one mod: which mods it overrides and which override it, with examples |
+| `read_log` | Last lines of MO2's log or the newest usvfs log, optionally filtered |
 | `list_executables` | Executables configured in MO2 |
 | `set_mods_enabled` / `set_mod_priority` | Enable/disable and move mods (`priority` or `after` another mod/separator) |
 | `set_plugins_enabled` / `set_plugin_priority` | Enable/disable and move plugins |
-| `refresh` | Refresh MO2 (F5) |
+| `refresh` | Refresh MO2 (F5) and wait until it has finished |
+| `create_separator` / `rename_mod` | Add a separator (optionally placed), rename mods and separators |
 | `run_executable` / `wait_for_run` / `list_runs` | Start a configured executable through the VFS, wait for it, refresh afterwards |
 | `install_mod` | Install an archive — **only after the user confirms a Yes/No dialog in MO2** |
 
@@ -77,16 +80,18 @@ QT_QPA_PLATFORM=offscreen python tests/test_e2e.py   # end-to-end test against a
 
 The test starts the real plugin and HTTP server against a fake organizer (`tests/mobase.py` is a tiny runtime stand-in for `mobase`) and exercises every tool over HTTP.
 
-Not yet verified against a live MO2: `install_mod`, `set_plugin_priority`, `set_plugins_enabled`, `run_executable`. Reports welcome.
+Not yet verified against a live MO2: `install_mod`, `set_plugin_priority`, `set_plugins_enabled`, `run_executable`, `create_separator`, `rename_mod`. Reports welcome.
 
 ## Roadmap / help wanted
 
 - Move Overwrite into a new mod (DynDOLOD, xLODGen, TexGen output)
-- Create and rename separators
 - Switch profiles
-- Read MO2 logs and the problems/diagnostics list
-- Conflict overview per mod
+- Read MO2's problems/diagnostics list
 - Test on other games and MO2 versions
+
+## Credits
+
+`create_separator`, `rename_mod`, `get_mod_conflicts`, `read_log` and waiting for MO2's refresh follow the approach of [MCP - MO2](https://www.nexusmods.com/site/mods/2549) by Antiarc123 (GPL-3.0-or-later), a larger MO2 MCP plugin worth a look.
 
 ## License
 

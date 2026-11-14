@@ -183,7 +183,7 @@ class McpServer:
         except ToolError as e:
             return {"content": [{"type": "text", "text": str(e)}], "isError": True}
         except Exception as e:  # noqa: BLE001
-            log.exception("tool %s failed", tool.name)
+            log.exception(f"tool {tool.name} failed")
             return {"content": [{"type": "text", "text": f"{type(e).__name__}: {e}"}], "isError": True}
         text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, indent=1)
         return {"content": [{"type": "text", "text": text}], "isError": False}
