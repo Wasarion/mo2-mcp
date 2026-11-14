@@ -1,0 +1,8 @@
+# Machine-specific files written by the plugin — contain your secret token
+mo2_mcp/connection.json
+mo2_mcp/tools.json
+*.tmp
+
+__pycache__/
+*.pyc
+.venv/
