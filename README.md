@@ -4,7 +4,7 @@ An [MCP](https://modelcontextprotocol.io) server that runs **inside Mod Organize
 
 No screenshots, no clicking, no extra runtimes: the plugin uses MO2's own Python and the Python standard library, and the bridge is a PowerShell script that ships with Windows.
 
-> Status: early (v0.2.0). Tested on MO2 2.5.2 with Skyrim Special Edition. Feedback and pull requests welcome.
+> Status: early (v0.2.1). Tested on MO2 2.5.2 with Skyrim Special Edition. Feedback and pull requests welcome.
 
 ## How it works
 

@@ -175,9 +175,13 @@ class McpServer:
         if tool is None:
             raise RpcError(INVALID_PARAMS, f"Unknown tool: {name}")
         args = params.get("arguments") or {}
-        if not isinstance(args, dict):
-            raise RpcError(INVALID_PARAMS, "arguments must be an object")
-        _check_args(tool, args)
+        try:
+            if not isinstance(args, dict):
+                raise RpcError(INVALID_PARAMS, "arguments must be an object")
+            _check_args(tool, args)
+        except RpcError as e:
+            # Bad arguments are a tool error the model can see and fix, not a protocol error.
+            return {"content": [{"type": "text", "text": str(e)}], "isError": True}
         try:
             value = self.executor(tool, args)
         except ToolError as e:

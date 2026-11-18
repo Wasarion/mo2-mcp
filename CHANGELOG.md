@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+- `get_mod` leaves out files and folders MO2 hides (`.mohidden`), counts them in `hidden_by_mo2`, and lists them under `hidden_files` with `list_files`. `get_mod_conflicts` also skips hidden folders, not only hidden files.
+- A wrong, missing or unknown argument now comes back as a tool error (`isError`) the AI can read and fix, instead of a protocol error. An unknown tool name is still a protocol error, as MCP requires.
+- Both ideas come from houseCARL 2.2.0.
+
 ## 0.2.0
 
 - New tools: `create_separator`, `rename_mod`, `get_mod_conflicts`, `read_log` (closes #2, #5; #4 in part).
