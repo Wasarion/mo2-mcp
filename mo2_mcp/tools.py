@@ -27,6 +27,23 @@ def _flag(state: Any, flag: Any) -> bool:
     return (int(state) & int(flag)) != 0
 
 
+def _walk_visible(root: str) -> tuple[list[str], list[str]]:
+    """Files under root as MO2's Data tab sees them, and what MO2 hides (*.mohidden files and folders)."""
+    visible: list[str] = []
+    hidden: list[str] = []
+    for dirpath, dirs, fnames in os.walk(root):
+        for d in [d for d in dirs if d.lower().endswith(".mohidden")]:
+            dirs.remove(d)
+            hidden.append(os.path.relpath(os.path.join(dirpath, d), root).replace("\\", "/") + "/")
+        for f in fnames:
+            rel = os.path.relpath(os.path.join(dirpath, f), root).replace("\\", "/")
+            if f.lower().endswith(".mohidden"):
+                hidden.append(rel)
+            elif rel.lower() != "meta.ini":
+                visible.append(rel)
+    return visible, hidden
+
+
 def _check_name(name: str) -> str:
     name = (name or "").strip()
     if not name or BAD_NAME.search(name) or name.endswith((".", " ")) or len(name) > 200:
@@ -188,11 +205,7 @@ class Mo2Tools:
         name = self._mod_name(args["name"])
         mod = ml.getMod(name)
         path = mod.absolutePath()
-        files: list[str] = []
-        for root, _, fnames in os.walk(path):
-            for f in fnames:
-                files.append(os.path.relpath(os.path.join(root, f), path).replace("\\", "/"))
-        files = [f for f in files if f.lower() != "meta.ini"]
+        files, hidden = _walk_visible(path)
         info: dict[str, Any] = {
             "name": name,
             "enabled": _flag(ml.state(name), mobase.ModState.ACTIVE),
@@ -208,10 +221,13 @@ class Mo2Tools:
             "path": path,
             "plugins": sorted(f for f in files if "/" not in f and f.lower().endswith((".esp", ".esm", ".esl"))),
             "file_count": len(files),
+            "hidden_by_mo2": len(hidden),
         }
         if args.get("list_files"):
             limit = int(args.get("max_files", 300))
             info["files"] = sorted(files)[:limit]
+            if hidden:
+                info["hidden_files"] = sorted(hidden)[:limit]
             if len(files) > limit:
                 info["files_truncated"] = len(files) - limit
         return info
@@ -239,26 +255,22 @@ class Mo2Tools:
         loses: dict[str, list[str]] = collections.defaultdict(list)
         checked = unique = 0
         truncated = False
-        for dirpath, _dirs, files in os.walk(root):
-            for f in files:
-                rel = os.path.relpath(os.path.join(dirpath, f), root)
-                if rel.lower() == "meta.ini" or f.lower().endswith(".mohidden"):
-                    continue
-                if checked >= 50000:
-                    truncated = True
-                    break
-                checked += 1
-                origins = list(self.org.getFileOrigins(rel))
-                if name not in origins:
-                    continue
-                shown = rel.replace("\\", "/")
-                if origins[0] == name:
-                    if len(origins) == 1:
-                        unique += 1
-                    for other in origins[1:]:
-                        beats[other].append(shown)
-                else:
-                    loses[origins[0]].append(shown)
+        visible, _hidden = _walk_visible(root)
+        for shown in visible:
+            if checked >= 50000:
+                truncated = True
+                break
+            checked += 1
+            origins = list(self.org.getFileOrigins(shown.replace("/", os.sep)))
+            if name not in origins:
+                continue
+            if origins[0] == name:
+                if len(origins) == 1:
+                    unique += 1
+                for other in origins[1:]:
+                    beats[other].append(shown)
+            else:
+                loses[origins[0]].append(shown)
         known = set(ml.allMods())
 
         def summary(d: dict[str, list[str]]) -> list[dict[str, Any]]:
@@ -274,7 +286,7 @@ class Mo2Tools:
             "files_without_conflict": unique,
             "overrides": summary(beats),
             "overridden_by": summary(loses),
-            "note": "Loose files only; BSA contents are not compared. 'data' means the game's own Data folder.",
+            "note": "Loose files only, without files MO2 hides (.mohidden); BSA contents are not compared. 'data' means the game's own Data folder.",
         }
 
     def list_executables(self, args: dict[str, Any]) -> Any:
