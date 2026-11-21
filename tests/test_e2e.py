@@ -120,21 +120,18 @@ class Org:
     def downloadManager(s): return s.dm
 
 class DownloadManager:
-    """Fake: file 1 completes after a moment, file 2 fails, file 3 never finishes."""
-    def __init__(s, root): s.root=root; s.cbs={}; s.started=[]; s.paths={}
-    def _on(s,kind,cb): s.cbs.setdefault(kind,[]).append(cb); return True
-    def onDownloadComplete(s,cb): return s._on("complete",cb)
-    def onDownloadFailed(s,cb): return s._on("failed",cb)
-    def onDownloadPaused(s,cb): return s._on("paused",cb)
-    def onDownloadRemoved(s,cb): return s._on("removed",cb)
-    def downloadPath(s,i): return s.paths[i]
+    """Fake: file 1 lands after a moment (with MO2's .meta), file 3 never finishes.
+    Like the real MO2, the returned id says nothing about which file in the folder it is."""
+    def __init__(s, root): s.root=root; s.started=[]
     def startDownloadNexusFile(s,mod_id,file_id):
-        i=len(s.started); s.started.append((mod_id,file_id))
-        s.paths[i]=os.path.join(s.root,"downloads",f"Mod {mod_id}-{file_id}.7z")
-        kind={1:"complete",2:"failed"}.get(file_id)
-        if kind:  # MO2 reports the end later, on the GUI thread
-            QTimer.singleShot(200, lambda: [cb(i) for cb in s.cbs.get(kind,[])])
-        return i
+        s.started.append((mod_id,file_id))
+        folder=os.path.join(s.root,"downloads")
+        def land():
+            name=f"Mod {mod_id}-{file_id}.7z"
+            open(os.path.join(folder,name),"w").close()
+            with open(os.path.join(folder,name+".meta"),"w") as f: f.write(f"[General]\nmodID={mod_id}\nfileID={file_id}\n")
+        if file_id==1: QTimer.singleShot(300, land)
+        return 481
 
 class FakeBackend:
     def __init__(s): s.alive=True
@@ -252,15 +249,17 @@ def client():
         os.makedirs(org.downloadsPath(),exist_ok=True); open(os.path.join(org.downloadsPath(),"a.7z"),"w").close()
         e,t = call("install_mod", {"archive":"a.7z"}); check("install declined in dialog -> isError", e and "declined" in t)
         e,t = call("install_mod", {"archive":"missing.7z"}); check("install missing archive", e and "not found" in t)
-        e,t = call("download_mod", {"mod_id":199063,"file_id":1}); d=json.loads(t)
-        check("download completes + archive name", not e and d["status"]=="complete" and d["archive"]=="Mod 199063-1.7z"
+        dl=org.downloadsPath()
+        old=os.path.join(dl,"Old copy.7z"); open(old,"w").close()  # an earlier download of the same file
+        with open(old+".meta","w") as f: f.write("[General]\nmodID=199063\nfileID=1\n")
+        os.utime(old,(1,1))
+        e,t = call("download_mod", {"mod_id":199063,"file_id":1,"wait_seconds":10}); d=json.loads(t)
+        check("download found by .meta, not by MO2's id", not e and d["status"]=="complete" and d["archive"]=="Mod 199063-1.7z"
               and org.dm.started==[(199063,1)])
-        e,t = call("download_mod", {"mod_id":185412,"file_id":2}); d=json.loads(t)
-        check("failed download reported", not e and d["status"]=="failed" and "archive" not in d)
         e,t = call("download_mod", {"mod_id":196070,"file_id":3,"wait_seconds":1}); d=json.loads(t)
-        check("slow download keeps going", not e and d["status"]=="downloading" and "wait_for_download" in d["note"])
+        check("slow download keeps going", not e and d["status"]=="not finished" and "wait_for_download" in d["note"])
         e,t = call("wait_for_download", {"download_id":d["download_id"],"timeout_seconds":1})
-        check("wait_for_download still downloading", not e and json.loads(t)["status"]=="downloading")
+        check("wait_for_download still not finished", not e and json.loads(t)["status"]=="not finished")
         e,t = call("wait_for_download", {"download_id":99}); check("wait for unknown download refused", e and "Unknown" in t)
         e,t = call("download_mod", {"mod_id":0,"file_id":5}); check("bad mod id refused", e and "positive" in t)
         cache=json.loads(P.TOOLS_CACHE.read_text()); check("tools cache written", len(cache)==21)
