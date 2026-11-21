@@ -28,6 +28,7 @@ class PluginFile:
     max_new_id: int | None = None
     new_cells: int = 0           # new CELL records
     new_worldspaces: int = 0     # new WRLD records
+    top_groups: set[str] = field(default_factory=set)  # top-level groups with records in them, e.g. {"WEAP", "WRLD"}
     notes: list[str] = field(default_factory=list)
 
     @property
@@ -79,14 +80,18 @@ def _read_header(data: mmap.mmap, start: int, end: int, plugin: PluginFile) -> N
 
 def _count_records(data: mmap.mmap, pos: int, end: int, plugin: PluginFile) -> None:
     own_index = len(plugin.masters)  # a FormID whose top byte is this index is a new record
+    top = ""
     while pos + 24 <= end:
         kind = bytes(data[pos:pos + 4])
         (size,) = struct.unpack_from("<I", data, pos + 4)
         if kind == b"GRUP":
+            if struct.unpack_from("<I", data, pos + 12)[0] == 0:  # a top-level group; its label is the record type
+                top = bytes(data[pos + 8:pos + 12]).decode("ascii", "replace")
             pos += 24  # step into the group; its records follow its header
             continue
         (form_id,) = struct.unpack_from("<I", data, pos + 12)
         plugin.records += 1
+        plugin.top_groups.add(top)
         if form_id >> 24 >= own_index:
             object_id = form_id & 0xFFFFFF
             plugin.new_records += 1

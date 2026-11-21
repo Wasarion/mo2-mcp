@@ -11,6 +11,7 @@ You can ask things like:
 - "Run xEdit Quick Auto Clean, wait until it finishes, then move what it wrote in Overwrite into the xEdit_Output mod."
 - "DynDOLOD is done: make a mod called DynDOLOD Output from Overwrite and put it under my LOD separator."
 - "Did all my SKSE plugins load the last time I started the game?"
+- "I added a few mods since yesterday. Do I need to rerun Pandora, TexGen or DynDOLOD?"
 - "How many full plugin slots am I using, and which plugins could be flagged light without changing FormIDs?"
 - "Switch to my Mod Dev profile." / "What is MO2 warning me about?"
 
@@ -20,7 +21,7 @@ The assistant reads and changes MO2 through MO2's own plugin interface, so every
 
 No extra software is needed: the plugin runs on MO2's own Python, and the bridge to the AI app is a PowerShell script that comes with Windows.
 
-> Status: v0.8.0, a personal learning project. Every tool has been tested on a live MO2 2.5.2 with Skyrim Special Edition 1.7.104. Feedback and pull requests welcome.
+> Status: v0.9.0, a personal learning project. Every tool has been tested on a live MO2 2.5.2 with Skyrim Special Edition 1.7.104. Feedback and pull requests welcome.
 
 ## How it works
 
@@ -44,6 +45,7 @@ AI client ⇄ (stdio) ⇄ bridge.ps1 ⇄ (HTTP, 127.0.0.1 + token) ⇄ mo2_mcp p
 | `get_mod_conflicts` | Loose-file conflicts of one mod: which mods it overrides and which override it, with examples |
 | `plugin_header` | Reads plugin files directly: flags, header version, masters, records and new records, and whether each could be a light (ESL) plugin as is, needs header 1.71, needs FormID compacting, or has too many records. Without names it checks every enabled full plugin and counts your full plugin slots. Reads only |
 | `list_skse_plugins` | Every SKSE plugin DLL in your mods (enabled or not) and the game's Data folder: its mod, whether another copy wins, and whether it loaded in the last game start (read from `skse64.log`, with the plugin's name and version) |
+| `check_outputs` | Whether generated output is out of date: for each Pandora, PGPatcher, xLODGen, TexGen and DynDOLOD output mod, when it was made, which enabled mods have relevant files newer than it, whether the profile's lists were saved since, masters its plugins need that are no longer enabled, and for Pandora which patches were ticked in the last run. Reads only |
 | `read_log` | Last lines of MO2's log or the newest usvfs log, optionally filtered |
 | `list_executables` | Executables configured in MO2 |
 | `set_mods_enabled` / `set_mod_priority` | Enable/disable and move mods (`priority` or `after` another mod/separator) |
