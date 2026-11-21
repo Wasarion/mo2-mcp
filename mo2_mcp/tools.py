@@ -641,7 +641,8 @@ class Mo2Tools:
                         prow["plugins_loading_after"] = after
                 else:
                     prow["enabled"] = False
-                row.setdefault("plugins", []).append(prow)
+                if len(prow) > 1:  # only plugins with something to say
+                    row.setdefault("plugins", []).append(prow)
 
             if kind == "pandora":
                 last = outputs.pandora_last_run(folder)
