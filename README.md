@@ -14,6 +14,7 @@ You can ask things like:
 - "I added a few mods since yesterday. Do I need to rerun Pandora, TexGen or DynDOLOD?"
 - "How many full plugin slots am I using, and which plugins could be flagged light without changing FormIDs?"
 - "Did every Community Shaders feature load, and is an old feature mod overriding the AIO?"
+- "Sort with LOOT and tell me what moved."
 - "Switch to my Mod Dev profile." / "What is MO2 warning me about?"
 
 The assistant reads and changes MO2 through MO2's own plugin interface, so everything it does is exactly what you would have clicked, and MO2 keeps its own files consistent.
@@ -22,7 +23,7 @@ The assistant reads and changes MO2 through MO2's own plugin interface, so every
 
 No extra software is needed: the plugin runs on MO2's own Python, and the bridge to the AI app is a PowerShell script that comes with Windows.
 
-> Status: v0.11.0, a personal learning project. Every tool has been tested on a live MO2 2.5.2 with Skyrim Special Edition 1.7.104. Feedback and pull requests welcome.
+> Status: v0.12.0, a personal learning project. Every tool has been tested on a live MO2 2.5.2 with Skyrim Special Edition 1.7.104. Feedback and pull requests welcome.
 
 ## How it works
 
@@ -57,6 +58,7 @@ AI client ⇄ (stdio) ⇄ bridge.ps1 ⇄ (HTTP, 127.0.0.1 + token) ⇄ mo2_mcp p
 | `list_notifications` | MO2's notifications (the warning-triangle list) with details and whether MO2 offers a guided fix. Briefly opens and closes MO2's notifications window |
 | `list_profiles` / `switch_profile` | List profiles; switch the active one exactly as MO2's profile box does (refused while MO2 is locked by a running program) |
 | `create_mod_from_overwrite` | Move Overwrite (or some of its folders) into a new or existing mod; `dry_run` shows the plan first. Files are moved, never deleted |
+| `loot_sort` | Sort with your standalone LOOT (the LOOT executable configured in MO2, not MO2's built-in sort): runs it with LOOT's `--auto-sort` option, waits, refreshes and lists only the plugins that moved, plus LOOT's messages for your enabled plugins. `dry_run` shows LOOT's last messages and what its last sort moved without sorting |
 | `run_executable` / `wait_for_run` / `list_runs` | Start a configured executable through the VFS, wait for it, refresh afterwards |
 | `install_mod` | Install an archive — **only after the user confirms a Yes/No dialog in MO2** |
 | `download_mod` / `wait_for_download` | Download a Nexus file into MO2's downloads folder through MO2's own Nexus login (needs Nexus Premium), and wait for it |

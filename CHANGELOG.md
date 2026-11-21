@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.12.0
+
+- New tool `loot_sort` (closes #25): sorts with the standalone LOOT configured in MO2's executables (binary `LOOT.exe`, or a title you give), never MO2's built-in sort. It starts LOOT through the VFS with the configured arguments plus LOOT's documented `--auto-sort` option (sort, apply, quit), waits, refreshes MO2 and compares the load order before and after (new module `loot.py`): only the plugins that changed place are listed. It adds LOOT's messages for enabled plugins (from LOOT's own `old_messages.json`, links kept readable) and warnings or errors from `LOOTDebugLog.txt`. `dry_run` sorts nothing and shows LOOT's last messages and what its last sort moved (from LOOT's backup of the previous order). Changing the load order counts as a write, so it is refused while another program started by the plugin runs.
+
 ## 0.11.0
 
 - `read_log` reads the logs of tools run through MO2 (closes #24, new module `toollogs.py`): `dyndolod`, `texgen`, `xlodgen` and `xedit` (found next to the executables configured in MO2, or in their `Logs` folder; debug logs skipped), `pandora` (`Engine.log` in the enabled Pandora output mod), `loot` (`LOOTDebugLog.txt`) and `skse` with `name` for any SKSE plugin's log in My Games (without a name it lists them). xEdit-based tools append every run to one file, so only the last session is shown unless `session=false`. For xEdit it also lists what Quick Auto Clean removed and saved; for DynDOLOD it points to DynDOLOD's own summary of log messages with its topics, and for all of these to a `bugreport.txt` if one exists. New option `problems_only` keeps warnings and errors.
