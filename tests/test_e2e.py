@@ -88,6 +88,7 @@ class Profile:
 class Org:
     def __init__(s, root):
         s.root=root; s.ml=ModList(os.path.join(root,"mods")); s.pl=PluginList(); s.refreshed=0; s.started=[]
+        s.origin_order=list(s.ml.order)
         os.makedirs(os.path.join(root,"overwrite"),exist_ok=True)
         os.makedirs(os.path.join(root,"logs"),exist_ok=True)
         with open(os.path.join(root,"logs","mo_interface.log"),"w") as f:
@@ -111,10 +112,12 @@ class Org:
     def pluginSetting(s,p,k): return {"port": 52599, "extra_instructions": "Follow the Step guide."}[k]
     def onUserInterfaceInitialized(s,cb): return True
     def getFileOrigins(s,p):
-        return [n for n in reversed(s.ml.order) if n in s.ml.active and os.path.exists(os.path.join(s.ml.mods[n].absolutePath(),p))]
+        # Like MO2: the order of file winners is only updated on refresh (#34); enabling/disabling is seen at once.
+        order = [n for n in s.origin_order if n in s.ml.order] + [n for n in s.ml.order if n not in s.origin_order]
+        return [n for n in reversed(order) if n in s.ml.active and os.path.exists(os.path.join(s.ml.mods[n].absolutePath(),p))]
     def resolvePath(s,p): return s.plugin_files.get(p, "/x/"+p)
     def refresh(s,save=True):
-        s.refreshed+=1
+        s.refreshed+=1; s.origin_order=list(s.ml.order)
         for n in s.pending:
             p=os.path.join(s.modsPath(),n); s.ml.order.append(n); s.ml.mods[n]=Mod(n,p,n.endswith("_separator"))
         s.pending=[]
@@ -309,6 +312,14 @@ def client():
         e,t = call("set_mods_enabled", {"names":["Unused"],"enabled":True}); check("enable mod", json.loads(t)=={"Unused":True})
         e,t = call("set_mod_priority", {"name":"Unused","after":"Extenders"}); check("move after separator", org.ml.order[1]=="Unused")
         e,t = call("set_mod_priority", {"name":"Unused","after":"SSE Engine Fixes"}); check("move after mod (downwards)", org.ml.order.index("Unused")==org.ml.order.index("SSE Engine Fixes")+1)
+        e,t = call("file_origins", {"path":"engine.ini"}); before_winner = json.loads(t)["winner"]
+        skse_at = org.ml.order.index("SKSE"); refreshes = org.refreshed
+        e,t = call("set_mod_priority", {"name":"SKSE","after":"SSE Engine Fixes"}); r = json.loads(t)
+        e2,t2 = call("file_origins", {"path":"engine.ini"})
+        check("set_mod_priority refreshes, so file winners are right at once (#34)",
+              not e and r["refreshed"] is True and org.refreshed == refreshes + 1
+              and before_winner == "SSE Engine Fixes" and json.loads(t2)["winner"] == "SKSE")
+        e,t = call("set_mod_priority", {"name":"SKSE","priority":skse_at})
         e,t = call("set_plugins_enabled", {"names":["enginefixes.esp"],"enabled":False}); check("disable plugin", json.loads(t)=={"EngineFixes.esp":False})
         st,r = rpc("tools/call", {"name":"set_mods_enabled","arguments":{"names":"x","enabled":True}})
         check("bad argument type -> isError tool result", r["result"]["isError"] and "must be array" in r["result"]["content"][0]["text"])
