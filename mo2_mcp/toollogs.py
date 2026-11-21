@@ -38,7 +38,7 @@ def tool_folders(executables: list[tuple[str, str]], kind: str) -> list[str]:
     pattern = TOOL_EXE[kind]
     for _, binary in executables:
         if binary and pattern.match(os.path.basename(binary).lower()):
-            folder = os.path.dirname(binary)
+            folder = os.path.normpath(os.path.dirname(binary))
             if folder not in out:
                 out.append(folder)
     return out
