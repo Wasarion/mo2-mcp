@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.0
+
+- New tool `plugin_header` (closes #19): reads plugin files directly (new module `espm.py`, record headers only, so a whole load order takes seconds) and reports flags, header version, masters, record and new-record counts, the new FormID range and a light-plugin verdict: `already_light`, `flag_as_is` (no new records, or all in the light range), `needs_header_171`, `needs_compacting` (with the enabled plugins that use it as a master) or `too_many`, plus a caution for new cells or worldspaces. Without names it checks every enabled full plugin except Bethesda's own and counts full plugin slots; `candidates_only` keeps the ones that need no FormID changes. It never changes a file.
+
 ## 0.7.0
 
 - New tool `list_skse_plugins` (closes #18): every `SKSE/Plugins/*.dll` in the mods folder and the game's Data folder, with its mod and whether that mod is enabled, whether another mod's copy wins, and whether it loaded in the last game start. The last part comes from SKSE's own `skse64.log` (in My Games), which SKSE 2.3 writes per DLL with the plugin's name and version or the reason it was not loaded. Also shows each DLL's file version and lists DLLs in the log that no mod provides. Filters: text, `enabled_only`, `problems_only`.
