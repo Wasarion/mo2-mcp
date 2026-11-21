@@ -1,10 +1,24 @@
 # mo2-mcp
 
-An [MCP](https://modelcontextprotocol.io) server that runs **inside Mod Organizer 2** and lets an AI client (for example the Claude desktop app) work with your live MO2: read the mod and plugin lists, enable and move mods, run your configured tools (xEdit, LOOT, DynDOLOD, …) and install archives you approved.
+**Let an AI assistant work in your Mod Organizer 2 for you.**
 
-No screenshots, no clicking, no extra runtimes: the plugin uses MO2's own Python and the Python standard library, and the bridge is a PowerShell script that ships with Windows.
+mo2-mcp is a small plugin for [Mod Organizer 2](https://github.com/ModOrganizer2/modorganizer) (MO2). It lets an AI assistant that speaks [MCP](https://modelcontextprotocol.io), such as the Claude desktop app, see and use your running MO2 directly, instead of you clicking through it or sending screenshots.
 
-> Status: early (v0.6.0). Tested on MO2 2.5.2 with Skyrim Special Edition. Feedback and pull requests welcome.
+You can ask things like:
+
+- "Which mods overwrite files from SMIM, and which win over it?"
+- "Turn on everything under the Extenders separator and put Address Library right after the separator."
+- "Run xEdit Quick Auto Clean, wait until it finishes, then move what it wrote in Overwrite into the xEdit_Output mod."
+- "DynDOLOD is done: make a mod called DynDOLOD Output from Overwrite and put it under my LOD separator."
+- "Switch to my Mod Dev profile." / "What is MO2 warning me about?"
+
+The assistant reads and changes MO2 through MO2's own plugin interface, so everything it does is exactly what you would have clicked, and MO2 keeps its own files consistent.
+
+**You stay in charge:** installing a mod always needs your **Yes** in an MO2 dialog, new mods arrive disabled, files are moved but never deleted, and nothing can be changed while a tool such as xEdit or DynDOLOD is still running.
+
+No extra software is needed: the plugin runs on MO2's own Python, and the bridge to the AI app is a PowerShell script that comes with Windows.
+
+> Status: v0.6.0, a personal learning project. Every tool has been tested on a live MO2 2.5.2 with Skyrim Special Edition 1.7.104. Feedback and pull requests welcome.
 
 ## How it works
 
@@ -85,11 +99,12 @@ QT_QPA_PLATFORM=offscreen python tests/test_e2e.py   # end-to-end test against a
 
 The test starts the real plugin and HTTP server against a fake organizer (`tests/mobase.py` is a tiny runtime stand-in for `mobase`) and exercises every tool over HTTP.
 
-Not yet verified against a live MO2: `wait_for_download`, `install_mod`, `set_plugin_priority`, `set_plugins_enabled`, `run_executable`, `create_separator`, `rename_mod`. Reports welcome.
+Every tool has also run against a live MO2 2.5.2 with Skyrim SE 1.7.104; the results are in [issue #6](https://github.com/Wasarion/mo2-mcp/issues/6). Not tried live: installing an archive with a FOMOD installer (MO2 shows its own installer dialog to the user).
 
-## Roadmap / help wanted
+## Limits
 
-- Test on other games and MO2 versions
+- Only tested with Skyrim Special Edition and MO2 2.5.2. Other games MO2 manages may work but are untested.
+- `switch_profile` and `list_notifications` work through MO2's own window (MO2's plugin interface has no way to do them), so they depend on MO2's window layout and may need updating for a future MO2 version.
 
 ## Credits
 
