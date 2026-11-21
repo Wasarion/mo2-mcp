@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import QApplication, QComboBox, QDialog, QMainWindow, QTree
 
 from .mcp import Tool, ToolError
 from .espm import light_verdict, read_plugin
-from . import outputs
+from . import outputs, toollogs
 from .cshaders import ini_version, parse_cs_log
 from .procs import RunTracker
 from .skse import dll_file_version, parse_skse_log
@@ -858,27 +858,94 @@ class Mo2Tools:
         return [r.describe() for r in self.runs.all()] or "Nothing has been started through this plugin yet."
 
     def read_log(self, args: dict[str, Any]) -> Any:
-        logs = os.path.join(self.invoke(self.org.basePath, 30), "logs")
         which = args.get("log", "mo")
+        base, docs, mod_paths = self.invoke(lambda: (
+            self.org.basePath(), self.org.managedGame().documentsDirectory().absolutePath(),
+            [(n, self.org.modList().getMod(n).absolutePath()) for n in self._mods_in_order()
+             if _flag(self.org.modList().state(n), mobase.ModState.ACTIVE)]), 30)
+        logs = os.path.join(base, "logs")
+        extra: list[str] = []
+        sessions = True  # tools built on xEdit append every run to one file; show the last run
         if which == "mo":
             path = os.path.join(logs, "mo_interface.log")
+            sessions = False
         elif which == "usvfs":
             found = sorted((f for f in os.listdir(logs) if f.lower().startswith("usvfs")),
                            key=lambda f: os.path.getmtime(os.path.join(logs, f))) if os.path.isdir(logs) else []
             if not found:
                 raise ToolError("No usvfs log found.")
             path = os.path.join(logs, found[-1])
+            sessions = False
+        elif which in toollogs.TOOL_EXE:
+            s = QSettings(os.path.join(base, "ModOrganizer.ini"), QSettings.Format.IniFormat)
+            executables = []
+            for i in range(s.beginReadArray("customExecutables")):
+                s.setArrayIndex(i)
+                executables.append((str(s.value("title", "")), str(s.value("binary", ""))))
+            s.endArray()
+            folders = toollogs.tool_folders(executables, which)
+            if not folders:
+                raise ToolError(f"No {which} executable is configured in MO2, so its folder is unknown.")
+            found_log = toollogs.find_tool_log(folders, which)
+            if found_log is None:
+                raise ToolError(f"No {which} log found in {', '.join(folders)} (or their Logs folder).")
+            path = found_log
+            if which == "dyndolod":
+                summary = toollogs.dyndolod_summary(folders)
+                if summary:
+                    extra.append(f"# DynDOLOD's summary of log messages: {summary[0]}")
+                    extra.append("# Topics: " + (", ".join(summary[1]) if summary[1] else "none"))
+            report = toollogs.bugreport(folders)
+            if report:
+                extra.append(f"# bugreport.txt found (written after a crash or error): {report} "
+                             f"({time.strftime('%Y-%m-%d %H:%M', time.localtime(os.path.getmtime(report)))})")
+        elif which == "pandora":
+            pandora = [p for n, p in mod_paths if "output" in n.lower() and outputs.detect_kind(p) == "pandora"]
+            candidates = [os.path.join(p, "Engine.log") for p in pandora]
+            candidates = [c for c in candidates if os.path.isfile(c)]
+            if not candidates:
+                raise ToolError("No Pandora Engine.log found in an enabled Pandora output mod.")
+            path = max(candidates, key=os.path.getmtime)
+            sessions = False
+        elif which == "loot":
+            path = os.path.join(os.environ.get("LOCALAPPDATA", ""), "LOOT", "LOOTDebugLog.txt")
+            sessions = False
+        elif which == "skse":
+            skse_dir = os.path.join(docs, "SKSE")
+            available = sorted(f[:-4] for f in os.listdir(skse_dir) if f.lower().endswith(".log")) \
+                if os.path.isdir(skse_dir) else []
+            name = str(args.get("name", "")).strip()
+            if not name:
+                return {"skse_logs": available, "folder": skse_dir,
+                        "note": "Give one of these as 'name' (e.g. CommunityShaders, skse64)."}
+            match = next((f for f in available if f.lower() == name.lower().removesuffix(".log")), None)
+            if match is None:
+                raise ToolError(f"No SKSE log named '{name}'. Available: {', '.join(available)}")
+            path = os.path.join(skse_dir, match + ".log")
+            sessions = False
         else:
-            raise ToolError("log must be 'mo' or 'usvfs'.")
+            raise ToolError("Unknown log.")
         if not os.path.isfile(path):
             raise ToolError(f"Log not found: {path}")
         n = min(max(1, int(args.get("lines", 150))), 3000)
         with open(path, encoding="utf-8", errors="replace") as f:
             lines = f.read().splitlines()
+        header = f"# {path} (written {time.strftime('%Y-%m-%d %H:%M', time.localtime(os.path.getmtime(path)))})"
+        if sessions and args.get("session", True):
+            lines, count = toollogs.last_session(lines)
+            if count > 1:
+                header += f"\n# last of {count} sessions in this file (session=false reads all)"
+        if which == "xedit":
+            highlights = toollogs.xedit_highlights(lines)
+            if highlights:
+                extra.append("# What was cleaned and saved:\n" + "\n".join(highlights[-40:]))
+        if args.get("problems_only"):
+            lines = toollogs.problems(lines)
         needle = str(args.get("contains", "")).lower()
         if needle:
             lines = [ln for ln in lines if needle in ln.lower()]
-        return f"# {path} (last {min(n, len(lines))} of {len(lines)} lines)\n" + "\n".join(lines[-n:])
+        out = f"{header}\n# last {min(n, len(lines))} of {len(lines)} lines\n" + "\n".join(lines[-n:])
+        return "\n".join(extra + [out]) if extra else out
 
     # -- write tools --------------------------------------------------------------
     def set_mods_enabled(self, args: dict[str, Any]) -> Any:
@@ -1246,8 +1313,14 @@ class Mo2Tools:
                  {"path": s}, self.file_origins, ["path"]),
             Tool("get_mod_conflicts", "Loose-file conflicts of one enabled mod: which mods it overrides and which override it, with example files.",
                  {"name": s, "examples": {"type": "integer"}}, self.get_mod_conflicts, ["name"], timeout=180),
-            Tool("read_log", "Last lines of MO2's log ('mo', default) or the newest usvfs log ('usvfs'), optionally only lines containing a text.",
-                 {"log": {"type": "string", "enum": ["mo", "usvfs"]}, "lines": {"type": "integer"}, "contains": s},
+            Tool("read_log", "Read a log: MO2's own ('mo', default) or newest usvfs log, or the log of a tool run through MO2: "
+                 "'dyndolod', 'texgen', 'xlodgen', 'xedit' (last session; for xEdit also what Quick Auto Clean "
+                 "removed and saved; DynDOLOD also points to its summary), 'pandora' (Engine.log), 'loot', or 'skse' "
+                 "with name = an SKSE plugin's log (without name: lists them). Options: lines, contains, "
+                 "problems_only (warnings and errors), session=false for every session in the file.",
+                 {"log": {"type": "string", "enum": ["mo", "usvfs", "dyndolod", "texgen", "xlodgen", "xedit", "pandora",
+                                                     "loot", "skse"]},
+                  "name": s, "lines": {"type": "integer"}, "contains": s, "problems_only": b, "session": b},
                  self.read_log, main_thread=False),
             Tool("list_skse_plugins", "Every SKSE plugin DLL in the mods (enabled or not) and the game's Data folder: its mod, "
                  "whether another mod's copy wins, and whether it loaded in the last game start (from skse64.log, with the "

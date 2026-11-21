@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.0
+
+- `read_log` reads the logs of tools run through MO2 (closes #24, new module `toollogs.py`): `dyndolod`, `texgen`, `xlodgen` and `xedit` (found next to the executables configured in MO2, or in their `Logs` folder; debug logs skipped), `pandora` (`Engine.log` in the enabled Pandora output mod), `loot` (`LOOTDebugLog.txt`) and `skse` with `name` for any SKSE plugin's log in My Games (without a name it lists them). xEdit-based tools append every run to one file, so only the last session is shown unless `session=false`. For xEdit it also lists what Quick Auto Clean removed and saved; for DynDOLOD it points to DynDOLOD's own summary of log messages with its topics, and for all of these to a `bugreport.txt` if one exists. New option `problems_only` keeps warnings and errors.
+
 ## 0.10.0
 
 - New tool `check_community_shaders` (closes #23): which mod provides `CommunityShaders.dll` and which other mods carry a copy, every `Shaders/Features/*.ini` in the enabled mods with its `[Info] Version` and the winning mod, and a problem when a separate feature mod overrides the version that comes with the core (a common leftover after moving to the all-in-one download). From `CommunityShaders.log` (new module `cshaders.py`, matching the messages in Community Shaders' own source): the core version and each feature's status at the last game start (loaded, not installed, disabled at boot, old version, obsolete, unknown), plus its warnings and errors. Also lists shader cache folders and notes when they are older than the installed DLL. `problems_only` keeps the features that need a look.
