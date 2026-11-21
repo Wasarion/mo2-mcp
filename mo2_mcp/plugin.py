@@ -24,7 +24,7 @@ from .tools import Mo2Tools
 # MO2's log handler prints the raw message without %-formatting, so log with f-strings.
 log = logging.getLogger("mo2_mcp")
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 HERE = Path(__file__).resolve().parent
 CONNECTION_FILE = HERE / "connection.json"   # port + token, read by bridge.ps1
 TOOLS_CACHE = HERE / "tools.json"            # tool list for the bridge while MO2 is closed
@@ -107,7 +107,7 @@ class McpPlugin(mobase.IPlugin):
 
     def build_server(self) -> McpServer:
         assert self._organizer is not None and self._invoker is not None
-        tools = Mo2Tools(self._organizer, self._runs, self._confirm_install, self._invoker.invoke)
+        tools = Mo2Tools(self._organizer, self._runs, self._confirm_install, self._invoker.invoke, lambda: self._main_window)
         extra = self._organizer.pluginSetting(self.name(), "extra_instructions")
         instructions = INSTRUCTIONS + (f"\n{extra.strip()}" if isinstance(extra, str) and extra.strip() else "")
         return McpServer("mo2", VERSION, tools.tools(), instructions, self._execute)

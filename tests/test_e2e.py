@@ -86,7 +86,9 @@ class Org:
         os.makedirs(os.path.join(root,"logs"),exist_ok=True)
         with open(os.path.join(root,"logs","mo_interface.log"),"w") as f:
             f.write("\n".join(f"[I] line {i}" for i in range(10))+"\n[W] plugin warning here\n")
-        s.pending=[]; s.on_refresh=[]; s.dm=DownloadManager(root)
+        s.pending=[]; s.on_refresh=[]
+        s.profile_name="Step"; s.manage_opened=False
+        for prof in ("Step","Mod Dev"): os.makedirs(os.path.join(root,"profiles",prof),exist_ok=True); s.dm=DownloadManager(root)
         with open(os.path.join(root,"ModOrganizer.ini"),"w") as f:
             f.write("[customExecutables]\nsize=2\n1\\title=SSEEdit\n1\\binary=H:/Tools/SSEEdit/SSEEdit.exe\n1\\arguments=\n1\\workingDirectory=\n2\\title=LOOT\n2\\binary=H:/Tools/LOOT/LOOT.exe\n2\\arguments=\n2\\workingDirectory=\n")
     def modList(s): return s.ml
@@ -98,8 +100,8 @@ class Org:
     def modsPath(s): return os.path.join(s.root,"mods")
     def downloadsPath(s): return os.path.join(s.root,"downloads")
     def overwritePath(s): return os.path.join(s.root,"overwrite")
-    def profileName(s): return "Step"
-    def profilePath(s): return os.path.join(s.root,"profiles","Step")
+    def profileName(s): return s.profile_name
+    def profilePath(s): return os.path.join(s.root,"profiles",s.profile_name)
     def pluginSetting(s,p,k): return {"port": 52599, "extra_instructions": "Follow the Step guide."}[k]
     def onUserInterfaceInitialized(s,cb): return True
     def getFileOrigins(s,p):
@@ -149,6 +151,14 @@ plug = P.McpPlugin()
 backend = FakeBackend(); plug._runs = RunTracker(backend)
 org = Org(tmp)
 assert plug.init(org)
+# A stand-in for MO2's main window: its profile box behaves like MO2's on_profileBox_currentIndexChanged.
+from PyQt6.QtWidgets import QMainWindow, QComboBox
+win = QMainWindow(); box = QComboBox(win); box.setObjectName("profileBox")
+box.addItems(["<Manage...>", "Mod Dev", "Step"]); box.setCurrentText("Step")
+def on_profile(index):
+    if index == 0: org.manage_opened = True
+    else: org.profile_name = box.itemText(index); org.refresh()
+box.currentIndexChanged.connect(on_profile)
 plug._confirm_install = lambda a,n: False  # simulate "No" in the dialog
 # rebuild server so the patched confirm is used
 plug.stop(); plug.start()
@@ -189,7 +199,7 @@ def client():
         except urllib.error.HTTPError as e: code = e.code
         check("browser Origin -> 403", code==403)
         st,r = rpc("tools/list"); names=[t["name"] for t in r["result"]["tools"]]
-        check("tools/list has 22 tools", len(names)==22)
+        check("tools/list has 24 tools", len(names)==24)
         e,t = call("get_status"); s=json.loads(t)
         check("get_status counts", not e and s["mods"]=={"total":4,"enabled":3,"separators":2} and s["plugins"]["enabled"]==3)
         e,t = call("list_mods", {"separator":"Fixes"}); print(t)
@@ -220,6 +230,22 @@ def client():
         check("rename separator keeps suffix", not e and r["new"]=="Test Zone_separator" and org.ml.order[3]=="Test Zone_separator")
         e,t = call("rename_mod", {"name":"Unused","new_name":"SKSE"}); check("rename onto existing name refused", e and "already exists" in t)
         e,t = call("set_mod_priority", {"name":"Test Zone","priority":6}); check("move separator to end", org.ml.order[-1]=="Test Zone_separator")
+        # -- profiles --
+        e,t = call("list_profiles"); r=json.loads(t)
+        check("list_profiles", not e and r["active"]=="Step" and [x["name"] for x in r["profiles"]]==["Mod Dev","Step"])
+        e,t = call("switch_profile", {"name":"Mod Dev"}); check("switch before MO2's window is up refused", e and "not ready" in t)
+        plug._on_ui(win)
+        e,t = call("switch_profile", {"name":"Nope"}); check("unknown profile refused", e and "Profiles: Mod Dev, Step" in t)
+        e,t = call("switch_profile", {"name":"<Manage...>"}); check("<Manage...> is never picked", e and not org.manage_opened)
+        e,t = call("switch_profile", {"name":"step"}); check("already active profile is a no-op", not e and "already active" in t)
+        box.setEnabled(False)
+        e,t = call("switch_profile", {"name":"Mod Dev"}); check("locked profile box refused", e and "locked" in t and org.profile_name=="Step")
+        box.setEnabled(True)
+        before=org.refreshed
+        e,t = call("switch_profile", {"name":"mod dev"}); r=json.loads(t)
+        check("switch profile (case-insensitive) and wait for refresh",
+              not e and r=={"previous":"Step","profile":"Mod Dev","refreshed":True} and org.refreshed>=before+2 and not org.manage_opened)
+        e,t = call("switch_profile", {"name":"Step"}); check("switch back", not e and org.profile_name=="Step")
         # -- create_mod_from_overwrite --
         ow = org.overwritePath()
         e,t = call("create_mod_from_overwrite", {"name":"LOD Output"}); check("empty Overwrite refused", e and "empty" in t)
@@ -290,7 +316,7 @@ def client():
         check("wait_for_download still not finished", not e and json.loads(t)["status"]=="not finished")
         e,t = call("wait_for_download", {"download_id":99}); check("wait for unknown download refused", e and "Unknown" in t)
         e,t = call("download_mod", {"mod_id":0,"file_id":5}); check("bad mod id refused", e and "positive" in t)
-        cache=json.loads(P.TOOLS_CACHE.read_text()); check("tools cache written", len(cache)==22)
+        cache=json.loads(P.TOOLS_CACHE.read_text()); check("tools cache written", len(cache)==24)
     except Exception as ex:
         import traceback; traceback.print_exc(); failures.append(repr(ex))
     finally:

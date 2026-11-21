@@ -4,7 +4,7 @@ An [MCP](https://modelcontextprotocol.io) server that runs **inside Mod Organize
 
 No screenshots, no clicking, no extra runtimes: the plugin uses MO2's own Python and the Python standard library, and the bridge is a PowerShell script that ships with Windows.
 
-> Status: early (v0.4.0). Tested on MO2 2.5.2 with Skyrim Special Edition. Feedback and pull requests welcome.
+> Status: early (v0.5.0). Tested on MO2 2.5.2 with Skyrim Special Edition. Feedback and pull requests welcome.
 
 ## How it works
 
@@ -32,6 +32,7 @@ AI client ⇄ (stdio) ⇄ bridge.ps1 ⇄ (HTTP, 127.0.0.1 + token) ⇄ mo2_mcp p
 | `set_plugins_enabled` / `set_plugin_priority` | Enable/disable and move plugins |
 | `refresh` | Refresh MO2 (F5) and wait until it has finished |
 | `create_separator` / `rename_mod` | Add a separator (optionally placed), rename mods and separators |
+| `list_profiles` / `switch_profile` | List profiles; switch the active one exactly as MO2's profile box does (refused while MO2 is locked by a running program) |
 | `create_mod_from_overwrite` | Move Overwrite (or some of its folders) into a new or existing mod; `dry_run` shows the plan first. Files are moved, never deleted |
 | `run_executable` / `wait_for_run` / `list_runs` | Start a configured executable through the VFS, wait for it, refresh afterwards |
 | `install_mod` | Install an archive — **only after the user confirms a Yes/No dialog in MO2** |
@@ -87,7 +88,6 @@ Not yet verified against a live MO2: `wait_for_download`, `install_mod`, `set_pl
 
 ## Roadmap / help wanted
 
-- Switch profiles
 - Read MO2's problems/diagnostics list
 - Test on other games and MO2 versions
 

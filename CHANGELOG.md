@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.0
+
+- New tools `list_profiles` and `switch_profile` (closes #3). MO2's plugin API has no way to change profiles, so `switch_profile` selects the profile in MO2's own profile box, which runs MO2's normal switch: it saves the current lists, activates the profile and refreshes. The `<Manage...>` entry is never selected, and the switch is refused while the box is locked (MO2 locks it while a program it started is running) or while a program started with `run_executable` is running.
+
 ## 0.4.0
 
 - New tool `create_mod_from_overwrite` (closes #1): moves what is in Overwrite into a new mod (enabled and optionally placed with `after`/`priority`) or, with `into_existing=true`, into an existing mod such as an xEdit output mod. `only` moves just some top-level folders, `dry_run` lists what would move without moving anything, and replacing a file in an existing mod needs `replace_files=true`. Files are moved, never deleted; folders the move leaves empty are removed. Refused while a program started with `run_executable` is still running.
