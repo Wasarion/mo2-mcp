@@ -54,7 +54,7 @@ class ModList:
         return m
 
 class PluginList:
-    def __init__(s): s.order=["Skyrim.esm","Update.esm","EngineFixes.esp"]; s.st={p:mobase.PluginState.ACTIVE for p in s.order}
+    def __init__(s): s.order=["Skyrim.esm","Update.esm","EngineFixes.esp"]; s.st={p:mobase.PluginState.ACTIVE for p in s.order}; s.light=set(); s.mast={}
     def pluginNames(s): return list(s.order)
     def priority(s,n): return s.order.index(n)
     def loadOrder(s,n): return s.order.index(n) if s.st[n]==mobase.PluginState.ACTIVE else -1
@@ -63,7 +63,8 @@ class PluginList:
     def setPriority(s,n,p): s.order.remove(n); s.order.insert(p,n); return True
     def isMasterFlagged(s,n): return n.endswith(".esm")
     def hasMasterExtension(s,n): return n.endswith(".esm")
-    def isLightFlagged(s,n): return False
+    def isLightFlagged(s,n): return n in s.light
+    def masters(s,n): return s.mast.get(n, [])
     def hasLightExtension(s,n): return False
     def isMediumFlagged(s,n): return False
     def hasNoRecords(s,n): return False
@@ -92,7 +93,7 @@ class Org:
         with open(os.path.join(root,"logs","mo_interface.log"),"w") as f:
             f.write("\n".join(f"[I] line {i}" for i in range(10))+"\n[W] plugin warning here\n")
         s.pending=[]; s.on_refresh=[]
-        s.profile_name="Step"; s.manage_opened=False
+        s.profile_name="Step"; s.manage_opened=False; s.plugin_files={}
         for prof in ("Step","Mod Dev"): os.makedirs(os.path.join(root,"profiles",prof),exist_ok=True); s.dm=DownloadManager(root)
         with open(os.path.join(root,"ModOrganizer.ini"),"w") as f:
             f.write("[customExecutables]\nsize=2\n1\\title=SSEEdit\n1\\binary=H:/Tools/SSEEdit/SSEEdit.exe\n1\\arguments=\n1\\workingDirectory=\n2\\title=LOOT\n2\\binary=H:/Tools/LOOT/LOOT.exe\n2\\arguments=\n2\\workingDirectory=\n")
@@ -111,7 +112,7 @@ class Org:
     def onUserInterfaceInitialized(s,cb): return True
     def getFileOrigins(s,p):
         return [n for n in reversed(s.ml.order) if n in s.ml.active and os.path.exists(os.path.join(s.ml.mods[n].absolutePath(),p))]
-    def resolvePath(s,p): return "/x/"+p
+    def resolvePath(s,p): return s.plugin_files.get(p, "/x/"+p)
     def refresh(s,save=True):
         s.refreshed+=1
         for n in s.pending:
@@ -221,7 +222,7 @@ def client():
         except urllib.error.HTTPError as e: code = e.code
         check("browser Origin -> 403", code==403)
         st,r = rpc("tools/list"); names=[t["name"] for t in r["result"]["tools"]]
-        check("tools/list has 26 tools", len(names)==26)
+        check("tools/list has 27 tools", len(names)==27)
         e,t = call("get_status"); s=json.loads(t)
         check("get_status counts", not e and s["mods"]=={"total":4,"enabled":3,"separators":2} and s["plugins"]["enabled"]==3)
         e,t = call("list_mods", {"separator":"Fixes"}); print(t)
@@ -386,7 +387,62 @@ def client():
               and r["in_log_but_not_found"]==["Gone.dll"])
         e,t = call("list_skse_plugins", {"problems_only":True}); check("SKSE problems_only", sorted(x["dll"] for x in json.loads(t)["plugins"])==["Broken.dll","New.dll"])
         e,t = call("list_skse_plugins", {"enabled_only":True,"filter":"engine"}); check("SKSE filters (text matches DLL or mod name)", len(json.loads(t)["plugins"])==3)
-        cache=json.loads(P.TOOLS_CACHE.read_text()); check("tools cache written", len(cache)==26)
+        # -- plugin headers / light candidates --
+        import struct
+        def plugin_bytes(masters, records, flags=0, version=1.71):
+            subs = b"HEDR" + struct.pack("<HfII", 12, version, len(records), 0x800)
+            for m in masters:
+                z = m.encode() + b"\0"
+                subs += b"MAST" + struct.pack("<H", len(z)) + z + b"DATA" + struct.pack("<H", 8) + b"\0" * 8
+            data = b"TES4" + struct.pack("<IIIIHH", len(subs), flags, 0, 0, 44, 0) + subs
+            groups = {}
+            for kind, fid in records: groups.setdefault(kind, []).append(fid)
+            for kind, fids in groups.items():
+                body = b"".join(kind + struct.pack("<IIIIHH", 4, 0, fid, 0, 44, 0) + b"\0" * 4 for fid in fids)
+                data += b"GRUP" + struct.pack("<I4sIHHHH", 24 + len(body), kind, 0, 0, 0, 0, 0) + body
+            return data
+        pdir = os.path.join(tmp, "plugin_files"); os.makedirs(pdir, exist_ok=True)
+        def add_plugin(name, content, masters=(), light=False):
+            path = os.path.join(pdir, name)
+            with open(path, "wb") as f: f.write(content)
+            org.pl.order.append(name); org.pl.st[name] = mobase.PluginState.ACTIVE; org.pl.mast[name] = list(masters)
+            org.plugin_files[name] = path
+            if light: org.pl.light.add(name)
+        sky = ["Skyrim.esm"]
+        add_plugin("AsIs.esp", plugin_bytes(sky, [(b"WEAP", 0x01000800), (b"WEAP", 0x01000801), (b"NPC_", 0x00012345)]), sky)
+        add_plugin("Overrides.esp", plugin_bytes(sky + ["Update.esm"], [(b"NPC_", 0x00012345), (b"NPC_", 0x01000F00)]), sky + ["Update.esm"])
+        add_plugin("Old170.esp", plugin_bytes(sky, [(b"MISC", 0x01000010), (b"MISC", 0x01000020)], version=1.70), sky)
+        add_plugin("Big.esp", plugin_bytes(sky, [(b"MISC", 0x01000900), (b"MISC", 0x01001234)]), sky)
+        add_plugin("Dependent.esp", plugin_bytes(sky + ["Big.esp"], [(b"MISC", 0x01001234)]), sky + ["Big.esp"])
+        add_plugin("Cells.esp", plugin_bytes(sky, [(b"CELL", 0x01000900)]), sky)
+        add_plugin("TooMany.esp", plugin_bytes(sky, [(b"MISC", 0x01000000 + i) for i in range(0x800, 0x800 + 4097)]), sky)
+        add_plugin("Light.esp", plugin_bytes(sky, [(b"MISC", 0x01000800)], flags=0x200), sky, light=True)
+        add_plugin("Broken.esp", b"not a plugin at all, just text", sky)
+        e,t = call("plugin_header", {"names":["asis.esp","Light.esp","Broken.esp","Big.esp"]}); r=json.loads(t)
+        by = {x["plugin"]: x for x in r["plugins"]}
+        a = by["AsIs.esp"]
+        check("plugin_header reads header, masters and counts",
+              not e and a["header_version"]==1.71 and a["masters"]==["Skyrim.esm"] and a["records"]==3 and a["new_records"]==2
+              and a["new_id_range"]=="0x000800-0x000801" and a["light"]=="flag_as_is" and a["flags"]=="")
+        check("plugin_header: already light, broken file, compacting with dependents",
+              by["Light.esp"]["light"]=="already_light" and "TES4" in by["Broken.esp"]["error"]
+              and by["Big.esp"]["light"]=="needs_compacting" and by["Big.esp"]["used_as_master_by"]==["Dependent.esp"]
+              and "summary" not in r)
+        e,t = call("plugin_header"); r=json.loads(t)
+        by = {x["plugin"]: x for x in r["plugins"]}
+        check("plugin_header without names skips official, disabled and light plugins",
+              not e and set(by)=={"AsIs.esp","Overrides.esp","Old170.esp","Big.esp","Dependent.esp","Cells.esp","TooMany.esp","Broken.esp"})
+        check("light verdicts: overrides only, header 1.70, too many, new cells",
+              by["Overrides.esp"]["light"]=="flag_as_is" and by["Overrides.esp"]["new_records"]==0
+              and by["Old170.esp"]["light"]=="needs_header_171" and by["TooMany.esp"]["light"]=="too_many"
+              and by["Cells.esp"]["light"]=="flag_as_is" and "1 new cell" in by["Cells.esp"]["why"]
+              and by["Dependent.esp"]["light"]=="flag_as_is")
+        check("light summary counts full plugin slots",
+              r["summary"]=={"enabled_full_plugins":10,"enabled_light_plugins":1,"full_plugin_limit":254,
+                             "could_be_flagged_light_as_is":4,"full_plugins_if_flagged":6})
+        e,t = call("plugin_header", {"candidates_only":True})
+        check("candidates_only", sorted(x["plugin"] for x in json.loads(t)["plugins"])==["AsIs.esp","Cells.esp","Dependent.esp","Old170.esp","Overrides.esp"])
+        cache=json.loads(P.TOOLS_CACHE.read_text()); check("tools cache written", len(cache)==27)
     except Exception as ex:
         import traceback; traceback.print_exc(); failures.append(repr(ex))
     finally:

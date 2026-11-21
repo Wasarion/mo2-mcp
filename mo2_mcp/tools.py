@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import shutil
+import struct
 import threading
 import time
 from typing import Any, Callable
@@ -21,6 +22,7 @@ from PyQt6.QtGui import QAction, QTextDocument
 from PyQt6.QtWidgets import QApplication, QComboBox, QDialog, QMainWindow, QTreeWidget
 
 from .mcp import Tool, ToolError
+from .espm import light_verdict, read_plugin
 from .procs import RunTracker
 from .skse import dll_file_version, parse_skse_log
 
@@ -452,6 +454,74 @@ class Mo2Tools:
             result["in_log_but_not_found"] = only_in_log
         return result
 
+    def plugin_header(self, args: dict[str, Any]) -> Any:
+        names = args.get("names")
+        official = re.compile(r"^(skyrim|update|dawnguard|hearthfires|dragonborn)\.esm$|^cc.*\.es[ml]$", re.IGNORECASE)
+
+        def collect() -> tuple[list[tuple[str, str, str]], dict[str, list[str]], int, int]:
+            pl = self.org.pluginList()
+            enabled = [p for p in pl.pluginNames() if pl.state(p) == mobase.PluginState.ACTIVE]
+            if names:
+                chosen = [self._plugin_name(n) for n in names]
+            else:
+                chosen = [p for p in enabled if not official.match(p)
+                          and not (pl.isLightFlagged(p) or pl.hasLightExtension(p))]
+            dependents: dict[str, list[str]] = collections.defaultdict(list)
+            for p in enabled:
+                for m in pl.masters(p):
+                    dependents[m.lower()].append(p)
+            full = sum(1 for p in enabled if not (pl.isLightFlagged(p) or pl.hasLightExtension(p)))
+            light = len(enabled) - full
+            return [(p, pl.origin(p), self.org.resolvePath(p)) for p in sorted(chosen, key=pl.priority)], dependents, full, light
+
+        chosen, dependents, full, light = self.invoke(collect, 60)
+        rows: list[dict[str, Any]] = []
+        for name, origin, path in chosen:
+            row: dict[str, Any] = {"plugin": name, "mod": origin}
+            if not path or not os.path.isfile(path):
+                rows.append(row | {"error": "File not found through MO2's virtual Data folder."})
+                continue
+            try:
+                info = read_plugin(path)
+            except (OSError, ValueError, struct.error) as e:
+                rows.append(row | {"error": str(e)})
+                continue
+            code, why = light_verdict(info)
+            flags = "".join(f for f, on in (("M", info.master_flag), ("L", info.light)) if on)
+            row |= {
+                "flags": flags,
+                "header_version": info.form_version,
+                "masters": info.masters,
+                "records": info.records,
+                "new_records": info.new_records,
+            }
+            if info.new_records:
+                row["new_id_range"] = f"0x{info.min_new_id:06X}-0x{info.max_new_id:06X}"
+            row["light"] = code
+            row["why"] = why
+            users = dependents.get(name.lower(), [])
+            if users and code in ("needs_compacting", "needs_header_171"):
+                row["used_as_master_by"] = users
+            if info.notes:
+                row["notes"] = info.notes
+            rows.append(row)
+
+        if args.get("candidates_only"):
+            rows = [r for r in rows if r.get("light") in ("flag_as_is", "needs_header_171")]
+        result: dict[str, Any] = {"plugins": rows}
+        if not names:
+            as_is = sum(1 for r in rows if r.get("light") == "flag_as_is")
+            result["summary"] = {
+                "enabled_full_plugins": full,
+                "enabled_light_plugins": light,
+                "full_plugin_limit": 254,
+                "could_be_flagged_light_as_is": as_is,
+                "full_plugins_if_flagged": full - as_is,
+            }
+        result["note"] = ("This tool only reads files; flag plugins in xEdit. Do it before starting a playthrough, not on an "
+                          "existing save. xEdit (-PseudoESL) and ESLifier also check facegen and INI references.")
+        return result
+
     def list_executables(self, args: dict[str, Any]) -> Any:
         s = QSettings(self._ini_path(), QSettings.Format.IniFormat)
         out = []
@@ -866,6 +936,11 @@ class Mo2Tools:
                  "whether another mod's copy wins, and whether it loaded in the last game start (from skse64.log, with the "
                  "plugin's name and version). Filters: text, enabled_only, problems_only.",
                  {"filter": s, "enabled_only": b, "problems_only": b}, self.list_skse_plugins),
+            Tool("plugin_header", "Read plugin files directly: flags, header version, masters, record and new-record counts, and "
+                 "whether each could be a light (ESL) plugin. Without names: every enabled plugin that isn't light yet "
+                 "(Bethesda's own files skipped), with a count of full plugin slots. candidates_only keeps those that can "
+                 "be flagged light without changing FormIDs. Reads files only.",
+                 {"names": names, "candidates_only": b}, self.plugin_header, main_thread=False, timeout=900),
             Tool("list_executables", "Executables configured in MO2 (titles usable with run_executable).",
                  {}, self.list_executables),
             Tool("list_runs", "Programs started with run_executable and their status.",
