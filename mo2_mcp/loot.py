@@ -98,3 +98,27 @@ def debug_problems(local_appdata: str) -> list[str]:
     noise = ("Epic Games Launcher", "as a duplicate of the install", "No cached card exists")
     return [ln for ln in lines if re.search(r"\[(warning|error|critical)\]", ln, re.IGNORECASE)
             and not any(n in ln for n in noise)]
+
+
+def shows_no_changes_dialog(local_appdata: str) -> bool:
+    """LOOT's setting 'show a dialog when sorting made no changes' (settings.toml). With --auto-sort, LOOT then
+    waits at that dialog instead of quitting."""
+    try:
+        with open(os.path.join(local_appdata, "LOOT", "settings.toml"), encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return False
+    m = re.search(r"^\s*useNoSortingChangesDialog\s*=\s*(true|false)", text, re.MULTILINE)
+    return bool(m and m.group(1) == "true")
+
+
+def sort_done(local_appdata: str, since: float) -> bool:
+    """Has LOOT, started after `since`, logged that sorting is complete?"""
+    path = os.path.join(local_appdata, "LOOT", "LOOTDebugLog.txt")
+    try:
+        if os.path.getmtime(path) < since:
+            return False
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return "Sorting operation complete" in f.read()
+    except OSError:
+        return False

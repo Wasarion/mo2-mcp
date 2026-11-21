@@ -611,6 +611,19 @@ def client():
               and r["run"]["status"]=="finished" and r["refreshed"] is True
               and r["moved"]==[{"plugin":"Big.esp","from":6,"to":3}]
               and r["summary"]=="1 plugin(s) moved" and "messages_note" in r)
+        # LOOT set to show its "no changes" dialog: it sorts, then waits instead of quitting.
+        with open(os.path.join(tmp, "LOOT", "settings.toml"), "w") as f: f.write("useNoSortingChangesDialog = true\n")
+        def loot_waits(exe, args=[], cwd=""):
+            with open(os.path.join(tmp, "LOOT", "LOOTDebugLog.txt"), "w") as f:
+                f.write("[info]: Beginning sorting operation.\n[info]: Sorting operation complete.\n")
+            return real_start(exe, args, cwd)
+        org.startApplication = loot_waits; backend.alive = True
+        t0 = time.time(); e,t = call("loot_sort"); r=json.loads(t)
+        check("loot_sort notices LOOT waiting at its no-changes dialog",
+              not e and r["run"]["status"]=="running" and "Sorting made no" in r["note"] and r["moved"]==[]
+              and time.time() - t0 < 30)
+        backend.alive = False
+        e,t = call("wait_for_run", {"run_id": r["run"]["run_id"], "timeout_seconds": 5, "refresh": False})
         org.startApplication = real_start
         cache=json.loads(P.TOOLS_CACHE.read_text()); check("tools cache written", len(cache)==30)
     except Exception as ex:

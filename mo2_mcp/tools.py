@@ -1320,11 +1320,26 @@ class Mo2Tools:
         timeout = min(float(args.get("timeout_seconds", 300)), MAX_WAIT)
         tracked = self.runs.get(int(run["run_id"]))
         assert tracked is not None
-        self.runs.wait(tracked, timeout)
+        dialog = loot.shows_no_changes_dialog(local)
+        deadline = time.time() + timeout
+        done_at = None
+        while tracked.running and time.time() < deadline:
+            self.runs.wait(tracked, 2)
+            if tracked.running and dialog and loot.sort_done(local, started - 2):
+                done_at = done_at or time.time()
+                if time.time() - done_at > 8:  # sorted, but LOOT did not quit: it is waiting at its dialog
+                    break
         result = {"run": tracked.describe()}
         if tracked.running:
-            result["note"] = ("LOOT is still running (it may be showing a dialog). Finish it, then call wait_for_run "
-                              "with this run_id and run loot_sort with dry_run=true to see the result.")
+            if done_at:
+                result["note"] = ("LOOT has sorted and found no changes, and is now showing its 'Sorting made no "
+                                  "changes' dialog. Click OK in LOOT and it quits; nothing needs to be applied. To "
+                                  "skip that dialog next time, turn it off in LOOT's settings.")
+                result["moved"] = []
+                result["summary"] = "LOOT changed nothing"
+            else:
+                result["note"] = ("LOOT is still running (it may be showing a dialog). Finish it, then call "
+                                  "wait_for_run with this run_id and run loot_sort with dry_run=true to see the result.")
             return result
         result["refreshed"] = self._refresh_and_wait()
         after = self.invoke(lambda: sorted(self.org.pluginList().pluginNames(), key=self.org.pluginList().priority), 30)
