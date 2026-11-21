@@ -16,8 +16,9 @@ import time
 from typing import Any, Callable
 
 import mobase
-from PyQt6.QtCore import QSettings
-from PyQt6.QtWidgets import QComboBox, QMainWindow
+from PyQt6.QtCore import QSettings, Qt, QTimer
+from PyQt6.QtGui import QAction, QTextDocument
+from PyQt6.QtWidgets import QApplication, QComboBox, QDialog, QMainWindow, QTreeWidget
 
 from .mcp import Tool, ToolError
 from .procs import RunTracker
@@ -459,6 +460,49 @@ class Mo2Tools:
         names = sorted((d for d in os.listdir(base) if os.path.isdir(os.path.join(base, d))), key=str.lower)
         return {"active": active, "profiles": [{"name": n, "active": n == active} for n in names]}
 
+    def list_notifications(self, args: dict[str, Any]) -> Any:
+        """MO2 gives plugins no access to its notifications, so read them from MO2's own window."""
+        window = self.main_window()
+        if window is None:
+            raise ToolError("MO2's main window is not ready yet; try again in a moment.")
+        action = window.findChild(QAction, "actionNotifications")
+        if action is None:
+            raise ToolError("MO2's notifications button was not found; this MO2 version is not supported.")
+        if not action.isEnabled():  # MO2 disables the button when it counts no notifications
+            return {"count": 0, "notifications": []}
+        if QApplication.activeModalWidget() is not None:
+            raise ToolError("A dialog is open in MO2 (or MO2 is locked by a running program). Close it and try again.")
+
+        found: dict[str, Any] = {}
+
+        def harvest(tries: int = 0) -> None:
+            dialog = next((d for d in window.findChildren(QDialog) if d.objectName() == "ProblemsDialog" and d.isVisible()), None)
+            if dialog is None:
+                if tries < 40:
+                    QTimer.singleShot(50, lambda: harvest(tries + 1))
+                return
+            tree = dialog.findChild(QTreeWidget, "problemsWidget")
+            rows = []
+            items = [tree.topLevelItem(i) for i in range(tree.topLevelItemCount())] if tree is not None else []
+            for item in items:
+                if item is None or tree is None:
+                    continue
+                details = str(item.data(0, Qt.ItemDataRole.UserRole) or "")  # the full description, may be HTML
+                if not details and item.text(0).startswith("("):
+                    continue  # MO2's "(There are no notifications)" placeholder
+                doc = QTextDocument()
+                doc.setHtml(details)
+                rows.append({"problem": item.text(0), "details": doc.toPlainText().strip(),
+                             "guided_fix_in_mo2": tree.itemWidget(item, 1) is not None})
+            found["rows"] = rows
+            dialog.reject()  # close MO2's window again
+
+        QTimer.singleShot(0, harvest)
+        action.trigger()  # opens MO2's notifications window; harvest() runs inside it and closes it
+        if "rows" not in found:
+            raise ToolError("Could not read MO2's notifications window. If it is still open, close it in MO2.")
+        return {"count": len(found["rows"]), "notifications": found["rows"]}
+
     def _profile_box(self) -> QComboBox:
         window = self.main_window()
         if window is None:
@@ -731,6 +775,9 @@ class Mo2Tools:
             Tool("create_separator", "Create a separator; optionally place it with 'after' (below a mod/separator) or 'priority'.",
                  {"name": s, "after": s, "priority": {"type": "integer"}}, self.create_separator, ["name"],
                  writes=True, main_thread=False, timeout=REFRESH_WAIT + 140),
+            Tool("list_notifications", "MO2's notifications (the warning-triangle list): each problem's text and details, "
+                 "and whether MO2 offers a guided fix. Briefly opens MO2's notifications window and closes it.",
+                 {}, self.list_notifications),
             Tool("list_profiles", "MO2 profiles and which one is active.",
                  {}, self.list_profiles),
             Tool("switch_profile", "Switch MO2's active profile, exactly as choosing it in MO2's profile box (MO2 saves the "

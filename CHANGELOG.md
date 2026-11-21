@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.0
+
+- New tool `list_notifications` (closes #4, with `read_log` from 0.2.0): MO2's notifications, the list behind the warning-triangle button, with each problem's details and whether MO2 offers a guided fix. MO2 gives plugins no access to that list, so the tool opens MO2's own notifications window, reads it and closes it again; you may see it flash. It does nothing when MO2 counts no notifications, and refuses while another dialog is open or MO2 is locked.
+
 ## 0.5.0
 
 - New tools `list_profiles` and `switch_profile` (closes #3). MO2's plugin API has no way to change profiles, so `switch_profile` selects the profile in MO2's own profile box, which runs MO2's normal switch: it saves the current lists, activates the profile and refreshes. The `<Manage...>` entry is never selected, and the switch is refused while the box is locked (MO2 locks it while a program it started is running) or while a program started with `run_executable` is running.
