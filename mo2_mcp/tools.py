@@ -10,6 +10,7 @@ import collections
 import logging
 import os
 import re
+import shutil
 import threading
 import time
 from typing import Any, Callable
@@ -449,6 +450,113 @@ class Mo2Tools:
             return self.invoke(lambda: self.set_mod_priority({"name": internal, **move}), 60) | {"separator": label}
         return {"separator": label, "name": internal, "priority": self.invoke(lambda: self.org.modList().priority(internal), 60)}
 
+    def create_mod_from_overwrite(self, args: dict[str, Any]) -> Any:
+        name = _check_name(args["name"])
+        into = bool(args.get("into_existing", False))
+        replace = bool(args.get("replace_files", False))
+        if args.get("after") is not None and args.get("priority") is not None:
+            raise ToolError("Give at most one of 'priority' or 'after'.")
+
+        overwrite = self.invoke(self.org.overwritePath, 30)
+        entries = sorted(e for e in os.listdir(overwrite) if e.lower() != "meta.ini") if os.path.isdir(overwrite) else []
+        if not entries:
+            raise ToolError("Overwrite is empty; there is nothing to move.")
+        only = args.get("only")
+        if only:
+            by_lower = {e.lower(): e for e in entries}
+            missing = [o for o in only if str(o).lower() not in by_lower]
+            if missing:
+                raise ToolError(f"Not in Overwrite: {', '.join(missing)}. Overwrite holds: {', '.join(entries)}.")
+            entries = sorted({by_lower[str(o).lower()] for o in only})
+        files: list[str] = []
+        for entry in entries:
+            src = os.path.join(overwrite, entry)
+            if os.path.isdir(src):
+                for dirpath, _dirs, fnames in os.walk(src):
+                    for f in fnames:
+                        files.append(os.path.relpath(os.path.join(dirpath, f), overwrite).replace("\\", "/"))
+            else:
+                files.append(entry)
+        files.sort()
+
+        def resolve() -> tuple[str, str]:
+            if into:
+                target = self._mod_name(name)
+                mod = self.org.modList().getMod(target)
+                if mod.isSeparator() or mod.isOverwrite() or mod.isForeign() or mod.isBackup():
+                    raise ToolError(f"'{target}' cannot receive files (separator, Overwrite, DLC/unmanaged, or a backup).")
+                return target, mod.absolutePath()
+            self._name_free(name)
+            return name, os.path.join(self.org.modsPath(), name)
+
+        target, target_path = self.invoke(resolve, 60)
+        clashes = [f for f in files if os.path.exists(os.path.join(target_path, f))] if into else []
+        plan: dict[str, Any] = {
+            "mod": target,
+            "new_mod": not into,
+            "moves": entries,
+            "file_count": len(files),
+            "files": files[:50],
+        }
+        if len(files) > 50:
+            plan["files_truncated"] = len(files) - 50
+        if clashes:
+            plan["replaces"] = clashes[:50]
+            plan["replaces_count"] = len(clashes)
+        if args.get("dry_run"):
+            return plan | {"dry_run": True, "note": "Nothing was moved."}
+        if clashes and not replace:
+            raise ToolError(
+                f"{len(clashes)} file(s) already exist in '{target}' (e.g. {clashes[0]}). "
+                "Pass replace_files=true to replace them, or use a new mod name. Nothing was moved.")
+
+        if not into:
+            def create() -> str:
+                mod = self.org.createMod(mobase.GuessedString(name))
+                if mod is None:
+                    raise ToolError("MO2 did not create the mod. Nothing was moved.")
+                return mod.absolutePath()
+            target_path = self.invoke(create, 60)
+
+        moved = 0
+        try:
+            for rel in files:
+                src = os.path.join(overwrite, rel)
+                dst = os.path.join(target_path, rel)
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                try:
+                    os.replace(src, dst)  # same drive: an instant rename
+                except OSError:
+                    shutil.move(src, dst)  # another drive: copy, then remove the source
+                moved += 1
+        except OSError as e:
+            raise ToolError(
+                f"Stopped after moving {moved} of {len(files)} file(s) into '{target}': {e}. "
+                "The rest are still in Overwrite; nothing was deleted.") from e
+        for entry in entries:  # remove the folders the move emptied, never a file
+            top = os.path.join(overwrite, entry)
+            if os.path.isdir(top):
+                for dirpath, _dirs, _files in sorted(os.walk(top), key=lambda w: -len(w[0])):
+                    try:
+                        os.rmdir(dirpath)
+                    except OSError:
+                        pass
+
+        result = {k: plan[k] for k in ("mod", "new_mod", "moves", "file_count")} | {"moved": moved}
+        if clashes:
+            result["replaced"] = len(clashes)
+        if not self._refresh_and_wait():
+            return result | {"note": "Files moved, but MO2 is still refreshing; place and enable the mod later."}
+        move = {k: args[k] for k in ("after", "priority") if args.get(k) is not None}
+        if move:
+            result["priority"] = self.invoke(lambda: self.set_mod_priority({"name": target, **move}), 60)["priority"]
+        if "enable" in args or not into:  # a new mod is enabled unless enable=false; an existing one keeps its state
+            want = bool(args.get("enable", True))
+            result["enabled"] = self.invoke(lambda: self.set_mods_enabled({"names": [target], "enabled": want}), 60)[target]
+        if "priority" not in result:
+            result["priority"] = self.invoke(lambda: self.org.modList().priority(target), 60)
+        return result
+
     def rename_mod(self, args: dict[str, Any]) -> Any:
         ml = self.org.modList()
         old = self._mod_name(args["name"])
@@ -579,6 +687,15 @@ class Mo2Tools:
             Tool("create_separator", "Create a separator; optionally place it with 'after' (below a mod/separator) or 'priority'.",
                  {"name": s, "after": s, "priority": {"type": "integer"}}, self.create_separator, ["name"],
                  writes=True, main_thread=False, timeout=REFRESH_WAIT + 140),
+            Tool("create_mod_from_overwrite",
+                 "Move what is in Overwrite into a new mod (enabled by default), or with into_existing=true into an existing mod. "
+                 "'only' limits it to some top-level entries (e.g. ['meshes', 'textures']); 'after'/'priority' place the mod; "
+                 "dry_run=true shows the plan without moving anything. Files are moved, never deleted; replacing a file in an "
+                 "existing mod needs replace_files=true.",
+                 {"name": s, "into_existing": b, "only": names, "after": s, "priority": {"type": "integer"},
+                  "enable": b, "replace_files": b, "dry_run": b},
+                 self.create_mod_from_overwrite, ["name"], writes=True, destructive=True, main_thread=False,
+                 timeout=REFRESH_WAIT + 400),
             Tool("rename_mod", "Rename a mod or separator (a separator keeps its separator status).",
                  {"name": s, "new_name": s}, self.rename_mod, ["name", "new_name"], writes=True),
             Tool("run_executable", "Start an MO2 executable by title (e.g. 'SSEEdit', 'LOOT') with the VFS. Returns at once with a run_id. Optional args replace the configured arguments.",
