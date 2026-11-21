@@ -17,6 +17,7 @@ from typing import Any, Callable
 
 import mobase
 from PyQt6.QtCore import QSettings
+from PyQt6.QtWidgets import QComboBox, QMainWindow
 
 from .mcp import Tool, ToolError
 from .procs import RunTracker
@@ -63,8 +64,10 @@ class Mo2Tools:
         runs: RunTracker,
         confirm_install: Callable[[str, str], bool],
         invoke: Callable[[Callable[[], Any], float], Any],
+        main_window: Callable[[], QMainWindow | None] = lambda: None,
     ):
         self.org = organizer
+        self.main_window = main_window  # MO2's window, once its UI is up (for the profile box)
         self.runs = runs
         self.confirm_install = confirm_install
         self.invoke = invoke  # run something on the GUI thread (for worker-thread tools)
@@ -450,6 +453,47 @@ class Mo2Tools:
             return self.invoke(lambda: self.set_mod_priority({"name": internal, **move}), 60) | {"separator": label}
         return {"separator": label, "name": internal, "priority": self.invoke(lambda: self.org.modList().priority(internal), 60)}
 
+    def list_profiles(self, args: dict[str, Any]) -> Any:
+        active = self.org.profileName()
+        base = os.path.dirname(os.path.normpath(self.org.profilePath()))
+        names = sorted((d for d in os.listdir(base) if os.path.isdir(os.path.join(base, d))), key=str.lower)
+        return {"active": active, "profiles": [{"name": n, "active": n == active} for n in names]}
+
+    def _profile_box(self) -> QComboBox:
+        window = self.main_window()
+        if window is None:
+            raise ToolError("MO2's main window is not ready yet; try again in a moment.")
+        box = window.findChild(QComboBox, "profileBox")
+        if box is None:
+            raise ToolError("MO2's profile box was not found; this MO2 version is not supported for switching profiles.")
+        return box
+
+    def switch_profile(self, args: dict[str, Any]) -> Any:
+        want = str(args["name"])
+
+        def switch() -> tuple[str, str, bool]:
+            box = self._profile_box()
+            # Item 0 is "<Manage...>", which opens a dialog; only items 1.. are profiles.
+            profiles = [box.itemText(i) for i in range(1, box.count())]
+            match = next((p for p in profiles if p.lower() == want.lower()), None)
+            if match is None:
+                raise ToolError(f"No profile named '{want}'. Profiles: {', '.join(profiles)}.")
+            old = self.org.profileName()
+            if match == old:
+                return old, old, False
+            if not box.isEnabled():
+                raise ToolError("MO2's profile box is locked, usually because a program started through MO2 "
+                                "(the game, xEdit…) is still running. Close it and try again.")
+            box.setCurrentText(match)  # runs MO2's own switch: saves the lists, activates, refreshes
+            return old, self.org.profileName(), True
+
+        old, now, changed = self.invoke(switch, 120)
+        if not changed:
+            return {"profile": now, "note": "That profile is already active."}
+        if now.lower() != want.lower():
+            raise ToolError(f"MO2 did not switch profiles; '{now}' is still active. See read_log.")
+        return {"previous": old, "profile": now, "refreshed": self._refresh_and_wait()}
+
     def create_mod_from_overwrite(self, args: dict[str, Any]) -> Any:
         name = _check_name(args["name"])
         into = bool(args.get("into_existing", False))
@@ -687,6 +731,11 @@ class Mo2Tools:
             Tool("create_separator", "Create a separator; optionally place it with 'after' (below a mod/separator) or 'priority'.",
                  {"name": s, "after": s, "priority": {"type": "integer"}}, self.create_separator, ["name"],
                  writes=True, main_thread=False, timeout=REFRESH_WAIT + 140),
+            Tool("list_profiles", "MO2 profiles and which one is active.",
+                 {}, self.list_profiles),
+            Tool("switch_profile", "Switch MO2's active profile, exactly as choosing it in MO2's profile box (MO2 saves the "
+                 "current lists first). Refused while MO2 is locked by a running program.",
+                 {"name": s}, self.switch_profile, ["name"], writes=True, main_thread=False, timeout=REFRESH_WAIT + 200),
             Tool("create_mod_from_overwrite",
                  "Move what is in Overwrite into a new mod (enabled by default), or with into_existing=true into an existing mod. "
                  "'only' limits it to some top-level entries (e.g. ['meshes', 'textures']); 'after'/'priority' place the mod; "
