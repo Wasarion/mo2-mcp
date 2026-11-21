@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import QApplication, QComboBox, QDialog, QMainWindow, QTree
 
 from .mcp import Tool, ToolError
 from .procs import RunTracker
+from .skse import dll_file_version, parse_skse_log
 
 log = logging.getLogger("mo2_mcp")
 
@@ -49,6 +50,19 @@ def _walk_visible(root: str) -> tuple[list[str], list[str]]:
             elif rel.lower() != "meta.ini":
                 visible.append(rel)
     return visible, hidden
+
+
+def _child_dir(path: str, *names: str) -> str | None:
+    """path/names... matched case-insensitively (mods ship 'SKSE/Plugins', 'skse/plugins', ...)."""
+    for name in names:
+        try:
+            match = next((e for e in os.listdir(path) if e.lower() == name.lower()), None)
+        except OSError:
+            return None
+        if match is None:
+            return None
+        path = os.path.join(path, match)
+    return path if os.path.isdir(path) else None
 
 
 def _check_name(name: str) -> str:
@@ -347,6 +361,92 @@ class Mo2Tools:
             "overridden_by": summary(loses),
             "note": "Loose files only, without files MO2 hides (.mohidden); BSA contents are not compared. 'data' means the game's own Data folder.",
         }
+
+    def list_skse_plugins(self, args: dict[str, Any]) -> Any:
+        ml = self.org.modList()
+        game = self.org.managedGame()
+        log_path = os.path.join(game.documentsDirectory().absolutePath(), "SKSE", "skse64.log")
+        log = None
+        log_time = None
+        if os.path.isfile(log_path):
+            with open(log_path, encoding="utf-8", errors="replace") as f:
+                log = parse_skse_log(f.read())
+            log_time = time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(log_path)))
+
+        sources: list[tuple[str, str, bool, int | None]] = []  # (mod, folder, enabled, priority)
+        for name in self._mods_in_order():
+            mod = ml.getMod(name)
+            if mod.isSeparator():
+                continue
+            sources.append((name, mod.absolutePath(), _flag(ml.state(name), mobase.ModState.ACTIVE), ml.priority(name)))
+        sources.append(("(game Data folder)", game.dataDirectory().absolutePath(), True, None))
+
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for mod_name, folder, enabled, priority in sources:
+            plugins_dir = _child_dir(folder, "SKSE", "Plugins")
+            if plugins_dir is None:
+                continue
+            for dll in sorted((f for f in os.listdir(plugins_dir) if f.lower().endswith(".dll")), key=str.lower):
+                row: dict[str, Any] = {"dll": dll, "mod": mod_name, "mod_enabled": enabled}
+                if priority is not None:
+                    row["priority"] = priority
+                if enabled:
+                    origins = list(self.org.getFileOrigins(os.path.join("SKSE", "Plugins", dll)))
+                    winner = origins[0] if origins else mod_name
+                    if winner != mod_name and not (mod_name.startswith("(") and winner == "data"):
+                        row["status"] = f"overridden by {winner}"
+                if "status" not in row:
+                    if not enabled:
+                        row["status"] = "mod disabled"
+                    elif log is None:
+                        row["status"] = "no SKSE log yet"
+                    else:
+                        entry = log.entries.get(dll.lower())
+                        if entry is None:
+                            row["status"] = "not in the SKSE log (added after the last game start?)"
+                            row["problem"] = True
+                        else:
+                            row["status"] = "loaded" if entry.loaded else f"not loaded: {entry.result}"
+                            if not entry.loaded:
+                                row["problem"] = True
+                            if entry.name:
+                                row["name"] = entry.name
+                            if entry.version:
+                                row["version"] = entry.version
+                        seen.add(dll.lower())
+                file_version = dll_file_version(os.path.join(plugins_dir, dll))
+                if file_version:
+                    row["file_version"] = file_version
+                rows.append(row)
+
+        only_in_log = sorted(e.dll for k, e in (log.entries.items() if log else []) if k not in seen)
+        summary = {
+            "dlls": len(rows),
+            "in_enabled_mods": sum(1 for r in rows if r["mod_enabled"] and not r["status"].startswith("overridden")),
+            "loaded": sum(1 for r in rows if r["status"] == "loaded"),
+            "problems": sum(1 for r in rows if r.get("problem")),
+            "in_disabled_mods": sum(1 for r in rows if not r["mod_enabled"]),
+        }
+        text = str(args.get("filter", "")).lower()
+        if text:
+            rows = [r for r in rows if text in r["dll"].lower() or text in r["mod"].lower() or text in r.get("name", "").lower()]
+        if args.get("enabled_only"):
+            rows = [r for r in rows if r["mod_enabled"]]
+        if args.get("problems_only"):
+            rows = [r for r in rows if r.get("problem")]
+        result: dict[str, Any] = {
+            "skse_log": log_path if log else f"not found: {log_path}",
+            "summary": summary,
+            "plugins": rows,
+        }
+        if log:
+            result["skse_version"] = log.skse_version
+            result["log_written"] = log_time
+            result["note"] = "Loaded/not loaded is from the last game start; mods changed since then are not reflected."
+        if only_in_log:
+            result["in_log_but_not_found"] = only_in_log
+        return result
 
     def list_executables(self, args: dict[str, Any]) -> Any:
         s = QSettings(self._ini_path(), QSettings.Format.IniFormat)
@@ -758,6 +858,10 @@ class Mo2Tools:
             Tool("read_log", "Last lines of MO2's log ('mo', default) or the newest usvfs log ('usvfs'), optionally only lines containing a text.",
                  {"log": {"type": "string", "enum": ["mo", "usvfs"]}, "lines": {"type": "integer"}, "contains": s},
                  self.read_log, main_thread=False),
+            Tool("list_skse_plugins", "Every SKSE plugin DLL in the mods (enabled or not) and the game's Data folder: its mod, "
+                 "whether another mod's copy wins, and whether it loaded in the last game start (from skse64.log, with the "
+                 "plugin's name and version). Filters: text, enabled_only, problems_only.",
+                 {"filter": s, "enabled_only": b, "problems_only": b}, self.list_skse_plugins),
             Tool("list_executables", "Executables configured in MO2 (titles usable with run_executable).",
                  {}, self.list_executables),
             Tool("list_runs", "Programs started with run_executable and their status.",
