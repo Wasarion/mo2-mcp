@@ -159,6 +159,23 @@ def on_profile(index):
     if index == 0: org.manage_opened = True
     else: org.profile_name = box.itemText(index); org.refresh()
 box.currentIndexChanged.connect(on_profile)
+# ...and its notifications button, which opens a modal ProblemsDialog like MO2's on_actionNotifications_triggered.
+from PyQt6.QtGui import QAction
+from PyQt6.QtWidgets import QDialog, QTreeWidget, QTreeWidgetItem, QPushButton
+from PyQt6.QtCore import Qt
+notif = QAction(win); notif.setObjectName("actionNotifications"); notif.setEnabled(False)
+problems_seen = {"opened": 0, "left_open": False}
+def open_problems():
+    problems_seen["opened"] += 1
+    dlg = QDialog(win); dlg.setObjectName("ProblemsDialog")
+    tree = QTreeWidget(dlg); tree.setObjectName("problemsWidget"); tree.setColumnCount(2)
+    a = QTreeWidgetItem(); a.setText(0, "Files in Overwrite"); a.setData(0, Qt.ItemDataRole.UserRole, "There are <b>3</b> files in Overwrite.")
+    a.setText(1, "No guided fix"); tree.addTopLevelItem(a)
+    b = QTreeWidgetItem(); b.setText(0, "Missing master"); b.setData(0, Qt.ItemDataRole.UserRole, "X.esp needs Y.esm")
+    tree.addTopLevelItem(b); tree.setItemWidget(b, 1, QPushButton("Fix"))
+    dlg.exec()
+    problems_seen["left_open"] = dlg.isVisible()
+notif.triggered.connect(open_problems)
 plug._confirm_install = lambda a,n: False  # simulate "No" in the dialog
 # rebuild server so the patched confirm is used
 plug.stop(); plug.start()
@@ -199,7 +216,7 @@ def client():
         except urllib.error.HTTPError as e: code = e.code
         check("browser Origin -> 403", code==403)
         st,r = rpc("tools/list"); names=[t["name"] for t in r["result"]["tools"]]
-        check("tools/list has 24 tools", len(names)==24)
+        check("tools/list has 25 tools", len(names)==25)
         e,t = call("get_status"); s=json.loads(t)
         check("get_status counts", not e and s["mods"]=={"total":4,"enabled":3,"separators":2} and s["plugins"]["enabled"]==3)
         e,t = call("list_mods", {"separator":"Fixes"}); print(t)
@@ -246,6 +263,13 @@ def client():
         check("switch profile (case-insensitive) and wait for refresh",
               not e and r=={"previous":"Step","profile":"Mod Dev","refreshed":True} and org.refreshed>=before+2 and not org.manage_opened)
         e,t = call("switch_profile", {"name":"Step"}); check("switch back", not e and org.profile_name=="Step")
+        # -- notifications --
+        e,t = call("list_notifications"); check("no notifications when MO2's button is off", not e and json.loads(t)=={"count":0,"notifications":[]} and problems_seen["opened"]==0)
+        notif.setEnabled(True)
+        e,t = call("list_notifications"); r=json.loads(t)
+        check("notifications read from MO2's window, which is closed again",
+              not e and r["count"]==2 and r["notifications"][0]=={"problem":"Files in Overwrite","details":"There are 3 files in Overwrite.","guided_fix_in_mo2":False}
+              and r["notifications"][1]["guided_fix_in_mo2"] and problems_seen["opened"]==1 and not problems_seen["left_open"])
         # -- create_mod_from_overwrite --
         ow = org.overwritePath()
         e,t = call("create_mod_from_overwrite", {"name":"LOD Output"}); check("empty Overwrite refused", e and "empty" in t)
@@ -316,7 +340,7 @@ def client():
         check("wait_for_download still not finished", not e and json.loads(t)["status"]=="not finished")
         e,t = call("wait_for_download", {"download_id":99}); check("wait for unknown download refused", e and "Unknown" in t)
         e,t = call("download_mod", {"mod_id":0,"file_id":5}); check("bad mod id refused", e and "positive" in t)
-        cache=json.loads(P.TOOLS_CACHE.read_text()); check("tools cache written", len(cache)==24)
+        cache=json.loads(P.TOOLS_CACHE.read_text()); check("tools cache written", len(cache)==25)
     except Exception as ex:
         import traceback; traceback.print_exc(); failures.append(repr(ex))
     finally:
