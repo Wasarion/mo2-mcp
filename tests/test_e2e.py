@@ -189,7 +189,7 @@ def client():
         except urllib.error.HTTPError as e: code = e.code
         check("browser Origin -> 403", code==403)
         st,r = rpc("tools/list"); names=[t["name"] for t in r["result"]["tools"]]
-        check("tools/list has 21 tools", len(names)==21)
+        check("tools/list has 22 tools", len(names)==22)
         e,t = call("get_status"); s=json.loads(t)
         check("get_status counts", not e and s["mods"]=={"total":4,"enabled":3,"separators":2} and s["plugins"]["enabled"]==3)
         e,t = call("list_mods", {"separator":"Fixes"}); print(t)
@@ -220,6 +220,34 @@ def client():
         check("rename separator keeps suffix", not e and r["new"]=="Test Zone_separator" and org.ml.order[3]=="Test Zone_separator")
         e,t = call("rename_mod", {"name":"Unused","new_name":"SKSE"}); check("rename onto existing name refused", e and "already exists" in t)
         e,t = call("set_mod_priority", {"name":"Test Zone","priority":6}); check("move separator to end", org.ml.order[-1]=="Test Zone_separator")
+        # -- create_mod_from_overwrite --
+        ow = org.overwritePath()
+        e,t = call("create_mod_from_overwrite", {"name":"LOD Output"}); check("empty Overwrite refused", e and "empty" in t)
+        def put(rel, text="x"):
+            path = os.path.join(ow, *rel.split("/")); os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f: f.write(text)
+        for rel in ("meshes/lod/a.nif", "textures/lod/b.dds", "DynDOLOD.esp", "SKSE/Plugins/x.ini"): put(rel)
+        e,t = call("create_mod_from_overwrite", {"name":"LOD Output","dry_run":True}); r=json.loads(t)
+        check("dry run lists 4 files and moves nothing", not e and r["dry_run"] and r["file_count"]==4
+              and os.path.exists(os.path.join(ow,"DynDOLOD.esp")) and "LOD Output" not in org.ml.order)
+        e,t = call("create_mod_from_overwrite", {"name":"TexGen Output","only":["Textures"],"after":"Address Library"}); r=json.loads(t)
+        tex = os.path.join(org.modsPath(),"TexGen Output","textures","lod","b.dds")
+        check("only= moves one folder into a new, enabled, placed mod",
+              not e and r["moved"]==1 and os.path.isfile(tex) and not os.path.exists(os.path.join(ow,"textures"))
+              and r["enabled"] and org.ml.order.index("TexGen Output")==org.ml.order.index("Address Library")+1)
+        e,t = call("create_mod_from_overwrite", {"name":"X","only":["nope"]}); check("unknown only= entry refused", e and "Not in Overwrite" in t and "meshes" in t)
+        e,t = call("create_mod_from_overwrite", {"name":"SKSE"}); check("new mod over existing name refused", e and "already exists" in t)
+        e,t = call("create_mod_from_overwrite", {"name":"Extenders","into_existing":True}); check("moving into a separator refused", e and "cannot receive" in t)
+        put("engine.ini", "new")
+        e,t = call("create_mod_from_overwrite", {"name":"SKSE","into_existing":True,"only":["engine.ini"]})
+        check("clash in existing mod refused, file kept", e and "already exist" in t and os.path.exists(os.path.join(ow,"engine.ini")))
+        was_active = "SKSE" in org.ml.active
+        e,t = call("create_mod_from_overwrite", {"name":"SKSE","into_existing":True,"replace_files":True}); r=json.loads(t)
+        with open(os.path.join(org.modsPath(),"SKSE","engine.ini")) as f: replaced_text = f.read()
+        check("into_existing moves the rest and replaces with replace_files",
+              not e and r["moved"]==4 and r["replaced"]==1 and replaced_text=="new" and os.listdir(ow)==[]
+              and os.path.isfile(os.path.join(org.modsPath(),"SKSE","meshes","lod","a.nif"))
+              and ("SKSE" in org.ml.active)==was_active and "enabled" not in r)
         e,t = call("file_origins", {"path":"Data/engine.ini"}); check("file_origins", json.loads(t)["winner"]=="SSE Engine Fixes")
         e,t = call("list_executables"); check("list_executables", [x["title"] for x in json.loads(t)]==["SSEEdit","LOOT"])
         e,t = call("set_mods_enabled", {"names":["Unused"],"enabled":True}); check("enable mod", json.loads(t)=={"Unused":True})
@@ -262,7 +290,7 @@ def client():
         check("wait_for_download still not finished", not e and json.loads(t)["status"]=="not finished")
         e,t = call("wait_for_download", {"download_id":99}); check("wait for unknown download refused", e and "Unknown" in t)
         e,t = call("download_mod", {"mod_id":0,"file_id":5}); check("bad mod id refused", e and "positive" in t)
-        cache=json.loads(P.TOOLS_CACHE.read_text()); check("tools cache written", len(cache)==21)
+        cache=json.loads(P.TOOLS_CACHE.read_text()); check("tools cache written", len(cache)==22)
     except Exception as ex:
         import traceback; traceback.print_exc(); failures.append(repr(ex))
     finally:
