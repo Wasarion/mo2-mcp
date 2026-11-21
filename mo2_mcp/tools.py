@@ -655,11 +655,14 @@ class Mo2Tools:
         def suspect(mod: str, points: int, why: str) -> None:
             entry = suspects.setdefault(mod, {"mod": mod, "score": 0, "why": []})
             entry["score"] += points
+            if " times in the probable call stack" in why:  # keep only the latest count
+                entry["why"] = [w for w in entry["why"] if " times in the probable call stack" not in w]
             if why not in entry["why"]:
                 entry["why"].append(why)
 
         stack: list[dict[str, Any]] = []
         seen_modules: set[str] = set()
+        repeats: dict[str, int] = {}
         first_mod_frame = True
         for frame in crash.frames:
             module = frame.module
@@ -677,15 +680,20 @@ class Mo2Tools:
                 if frame.source:
                     row["source"] = frame.source
                 stack.append(row)
-            if mod and module.lower() not in seen_modules:
+            if not mod:
+                continue
+            where = f"{module} (frame {frame.index}" + (f", {frame.source})" if frame.source else ")")
+            if module.lower() not in seen_modules:
                 seen_modules.add(module.lower())
-                where = f"{module} in the {'probable call stack' if frame.probable else 'stack scan'} (frame {frame.index}"
-                where += f", {frame.source})" if frame.source else ")"
                 if frame.probable and first_mod_frame:
                     suspect(mod, 3, "first mod DLL in the probable call stack: " + where)
                     first_mod_frame = False
                 else:
-                    suspect(mod, 2 if frame.probable else 1, where)
+                    suspect(mod, 2 if frame.probable else 1,
+                            ("in the probable call stack: " if frame.probable else "found by the stack scan: ") + where)
+            elif frame.probable:
+                repeats[module.lower()] = repeats.get(module.lower(), 1) + 1
+                suspect(mod, 1, f"{module} appears {repeats[module.lower()]} times in the probable call stack")
 
         pl = self.org.pluginList()
         official = re.compile(r"^(skyrim|update|dawnguard|hearthfires|dragonborn)\.esm$|^cc.*\.es[lm]$", re.IGNORECASE)

@@ -657,7 +657,9 @@ def client():
         check("read_crash_log: objects mapped, suspects ranked",
               r["files_in_objects"]==[{"file":"meshes/clutter/x.nif","mod":"Clutter Mod"}]
               and {"plugin":"AsIs.esp","mod":"SSE Engine Fixes"} in r["plugins_in_objects"]
-              and [(x["mod"], x["score"]) for x in r["suspects"]]==[("CS Core",3),("Clutter Mod",2),("SSE Engine Fixes",1)]
+              and [(x["mod"], x["score"]) for x in r["suspects"]]==[("CS Core",4),("Clutter Mod",2),("SSE Engine Fixes",1)]
+              and r["suspects"][0]["why"]==["first mod DLL in the probable call stack: CommunityShaders.dll (frame 1, LinearLighting.cpp:396)",
+                                            "CommunityShaders.dll appears 2 times in the probable call stack"]
               and r["other_crash_logs"]==[{"file":"crash-2026-11-20-10-00-00.log","exception":"EXCEPTION_STACK_OVERFLOW",
                                            "in_module":"SkyrimSE.exe","first_mod_dll":None}])
         e,t = call("read_crash_log", {"file":"crash-2026-11-20-10-00-00.log"}); r=json.loads(t)
