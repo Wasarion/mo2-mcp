@@ -222,7 +222,7 @@ def client():
         except urllib.error.HTTPError as e: code = e.code
         check("browser Origin -> 403", code==403)
         st,r = rpc("tools/list"); names=[t["name"] for t in r["result"]["tools"]]
-        check("tools/list has 30 tools", len(names)==30)
+        check("tools/list has 31 tools", len(names)==31)
         e,t = call("get_status"); s=json.loads(t)
         check("get_status counts", not e and s["mods"]=={"total":4,"enabled":3,"separators":2} and s["plugins"]["enabled"]==3)
         e,t = call("list_mods", {"separator":"Fixes"}); print(t)
@@ -625,7 +625,44 @@ def client():
         backend.alive = False
         e,t = call("wait_for_run", {"run_id": r["run"]["run_id"], "timeout_seconds": 5, "refresh": False})
         org.startApplication = real_start
-        cache=json.loads(P.TOOLS_CACHE.read_text()); check("tools cache written", len(cache)==30)
+        # -- crash logs --
+        e,t = call("read_crash_log"); r=json.loads(t)
+        check("read_crash_log without crash logs", not e and r["crash_logs"]==[])
+        add_mod("Clutter Mod", {"meshes/clutter/x.nif": ("n", 0)})
+        sk = os.path.join(tmp, "docs", "SKSE")
+        with open(os.path.join(sk, "crash-2026-11-20-10-00-00.log"), "w") as f:
+            f.write('CRASH TIME: 2026-11-20 10:00:00\nUnhandled exception "EXCEPTION_STACK_OVERFLOW" at 0x1 SkyrimSE.exe+12\n\n'
+                    'PROBABLE CALL STACK:\n\t[0] 0x1 SkyrimSE.exe+12\n')
+        os.utime(os.path.join(sk, "crash-2026-11-20-10-00-00.log"), (time.time() - 500, time.time() - 500))
+        with open(os.path.join(sk, "crash-2026-11-21-06-53-26.log"), "w") as f:
+            f.write('CRASH TIME: 2026-11-21 06:53:26\nSkyrim SSE v1.7.104\nCrashLoggerSSE v1-27-0-0\n\n'
+                    'Unhandled exception "EXCEPTION_ACCESS_VIOLATION" at 0x7FF72F28757A SkyrimSE.exe+155757A\tmulss\n\n'
+                    'POSSIBLE RELEVANT OBJECTS:\n'
+                    '\tRSP+90: (BSTriShape*) "RWT_DirtFlecks" ("clutter\\x.nif")\n'
+                    '\tRDX: (TESObjectREFR*) -> (File: "Skyrim.esm", Modified by: "AsIs.esp")\n\n'
+                    'THREAD CONTEXT (HEURISTIC):\n\tLikely Role: Rendering\n\n'
+                    'CALL STACK ([P]robable / [S]tack scan):\n'
+                    '\t[ 0][P] 0x7FF72F28757A   SkyrimSE.exe+155757A -> 107527+0x4EA\tmulss\n'
+                    '\t[ 1][P] 0x7FFCADF92467   CommunityShaders.dll+0BB2467\tnop |  E:\\src\\LinearLighting.cpp:396 void x\n'
+                    '\t[ 2][P] 0x7FFCADF92467   CommunityShaders.dll+0BB2400\tnop\n'
+                    '\t[ 3][P] 0x7FFD5599DDA7   KERNEL32.DLL+002DDA7\n'
+                    "\t[ 4][S] 0x7FFCAE2DB642   Fuz Ro D'oh.dll+0EFB642\tmov\n\nREGISTERS:\n\tRAX 0x0\n")
+        e,t = call("read_crash_log"); r=json.loads(t)
+        check("read_crash_log: newest log, exception, role, stack mapped to mods",
+              not e and r["crash_time"]=="2026-11-21 06:53:26" and r["exception"]=="EXCEPTION_ACCESS_VIOLATION"
+              and r["in_module"]=="SkyrimSE.exe" and r["thread_role"]=="Rendering"
+              and [(x["module"], x["kind"], x.get("mod")) for x in r["probable_call_stack"]]==[
+                  ("SkyrimSE.exe","game",None),("CommunityShaders.dll","mod","CS Core"),("KERNEL32.DLL","Windows, runtime or driver",None)]
+              and r["probable_call_stack"][1]["source"]=="LinearLighting.cpp:396")
+        check("read_crash_log: objects mapped, suspects ranked",
+              r["files_in_objects"]==[{"file":"meshes/clutter/x.nif","mod":"Clutter Mod"}]
+              and {"plugin":"AsIs.esp","mod":"SSE Engine Fixes"} in r["plugins_in_objects"]
+              and [(x["mod"], x["score"]) for x in r["suspects"]]==[("CS Core",3),("Clutter Mod",2),("SSE Engine Fixes",1)]
+              and r["other_crash_logs"]==[{"file":"crash-2026-11-20-10-00-00.log","exception":"EXCEPTION_STACK_OVERFLOW",
+                                           "in_module":"SkyrimSE.exe","first_mod_dll":None}])
+        e,t = call("read_crash_log", {"file":"crash-2026-11-20-10-00-00.log"}); r=json.loads(t)
+        check("read_crash_log by file name", not e and r["exception"]=="EXCEPTION_STACK_OVERFLOW" and r["suspects"]==[])
+        cache=json.loads(P.TOOLS_CACHE.read_text()); check("tools cache written", len(cache)==31)
     except Exception as ex:
         import traceback; traceback.print_exc(); failures.append(repr(ex))
     finally:

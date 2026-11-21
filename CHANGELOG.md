@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.13.0
+
+- New tool `read_crash_log` (closes #26): reads Crash Logger's `crash-*.log` from My Games (the newest, or the one named in `file`; new module `crashlog.py`). It shows the exception and the module it happened in, the thread's likely role, the probable call stack with each DLL mapped to the mod that provides it (the game and Windows, runtime and driver modules are marked, not blamed), the plugins and meshes/textures named in the relevant objects with the mods that provide them, and a short list of suspect mods scored by how early and how often they appear. Older crash logs are listed with their exception and first mod DLL, to see whether a crash repeats. It only reads files and does not guess fixes.
+
 ## 0.12.0
 
 - New tool `loot_sort` (closes #25): sorts with the standalone LOOT configured in MO2's executables (binary `LOOT.exe`, or a title you give), never MO2's built-in sort. It starts LOOT through the VFS with the configured arguments plus LOOT's documented `--auto-sort` option (sort, apply, quit), waits, refreshes MO2 and compares the load order before and after (new module `loot.py`): only the plugins that changed place are listed. It adds LOOT's messages for enabled plugins (from LOOT's own `old_messages.json`, links kept readable) and warnings or errors from `LOOTDebugLog.txt`. `dry_run` sorts nothing and shows LOOT's last messages and what its last sort moved (from LOOT's backup of the previous order). If LOOT's "Sorting made no changes" dialog is turned on, LOOT waits at that dialog instead of quitting; the tool notices this from LOOT's settings and debug log and says so instead of waiting for the timeout. Changing the load order counts as a write, so it is refused while another program started by the plugin runs.
