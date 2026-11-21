@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.10.0
+
+- New tool `check_community_shaders` (closes #23): which mod provides `CommunityShaders.dll` and which other mods carry a copy, every `Shaders/Features/*.ini` in the enabled mods with its `[Info] Version` and the winning mod, and a problem when a separate feature mod overrides the version that comes with the core (a common leftover after moving to the all-in-one download). From `CommunityShaders.log` (new module `cshaders.py`, matching the messages in Community Shaders' own source): the core version and each feature's status at the last game start (loaded, not installed, disabled at boot, old version, obsolete, unknown), plus its warnings and errors. Also lists shader cache folders and notes when they are older than the installed DLL. `problems_only` keeps the features that need a look.
+
 ## 0.9.0
 
 - New tool `check_outputs` (closes #22): is generated output out of date? Output mods are found by name (containing "Output", or the names given) and recognized by their content as Pandora, PGPatcher, xLODGen, TexGen or DynDOLOD output (new module `outputs.py`). For each: when it was made (its newest file), the enabled mods with files that matter to that tool and are newer than it (with a count and examples; plugins count for xLODGen and DynDOLOD only when they hold worldspace or LOD object records, which `plugin_header`'s reader now also reports), whether the profile's mod list or load order was saved since, masters of its plugins that are no longer enabled, the plugins loading after them, and for Pandora the patches ticked in its last run compared with the ones installed now. A later step's output never makes an earlier step stale (TexGen output newer than PGPatcher's is fine), and files written within five minutes of the output count as the same run. It compares file times only and never reruns anything.
