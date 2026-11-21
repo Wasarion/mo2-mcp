@@ -354,7 +354,7 @@ def client():
         dp, ms, bad = sample.entries["dp_extender.dll"], sample.entries["msdia140.dll"], sample.entries["bad.dll"]
         check("SKSE log parser: names with brackets, failures, version",
               sample.skse_version=="2.3.1" and dp.loaded and dp.name=="DP_Extender - Dynamic Potions Extender (by egocarib)" and dp.version=="2 (0x00000002)"
-              and not ms.loaded and ms.result=="no version data 0" and not bad.loaded and "Error 126" in bad.result)
+              and not ms.loaded and ms.result=="no version data 0" and ms.helper and not dp.helper and not bad.loaded and "Error 126" in bad.result)
         def dll(folder, *rel):
             path = os.path.join(folder, *rel); os.makedirs(os.path.dirname(path), exist_ok=True); open(path, "w").close()
         mods = org.modsPath()

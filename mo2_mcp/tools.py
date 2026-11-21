@@ -407,8 +407,12 @@ class Mo2Tools:
                             row["status"] = "not in the SKSE log (added after the last game start?)"
                             row["problem"] = True
                         else:
-                            row["status"] = "loaded" if entry.loaded else f"not loaded: {entry.result}"
-                            if not entry.loaded:
+                            if entry.loaded:
+                                row["status"] = "loaded"
+                            elif entry.helper:
+                                row["status"] = "helper DLL, not an SKSE plugin (SKSE skips it)"
+                            else:
+                                row["status"] = f"not loaded: {entry.result}"
                                 row["problem"] = True
                             if entry.name:
                                 row["name"] = entry.name

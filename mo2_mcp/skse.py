@@ -29,6 +29,11 @@ class LogEntry:
     name: str = ""
     version: str = ""
 
+    @property
+    def helper(self) -> bool:
+        """SKSE found no plugin version data: a helper library (e.g. msdia140.dll) that SKSE skips on purpose."""
+        return not self.loaded and self.result.lower().startswith("no version data")
+
 
 @dataclass
 class SkseLog:
