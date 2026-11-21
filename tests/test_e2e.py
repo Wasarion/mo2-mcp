@@ -542,6 +542,47 @@ def client():
         check("CS shader cache found in Overwrite", r["shader_cache"][0]["mod"]=="(Overwrite)" and r["shader_cache"][0]["files"]==1)
         e,t = call("check_community_shaders", {"problems_only":True})
         check("CS problems_only", sorted(x["feature"] for x in json.loads(t)["features"])==["Beta","Zed"])
+        # -- tool logs --
+        tools_dir = os.path.join(tmp, "tools")
+        def put(rel, text, age=0):
+            path = os.path.join(tools_dir, *rel.split("/")); os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f: f.write(text)
+            t = time.time() - 1000 + age; os.utime(path, (t, t))
+        put("DynDOLOD/DynDOLODx64.exe", "")
+        put("DynDOLOD/Logs/DynDOLOD_SSE_log.txt", "DynDOLOD 3.0 starting session 2026-11-16 10:00:00\nold run line\n<Warning: old>\n"
+            "DynDOLOD 3.0 starting session 2026-11-17 13:46:17\n[00:00] Using Data Path\n<Warning: Worldspace bounds larger>\n"
+            "[27:55] Created a summary\n", 10)
+        put("DynDOLOD/Logs/DynDOLOD_SSE_Debug_log.txt", "debug", 20)
+        put("DynDOLOD/Summary/DynDOLOD_Summary_Index.html", "<html>")
+        put("DynDOLOD/Summary/DynDOLOD_Summary_RootBlock.html", "<html>")
+        put("DynDOLOD/bugreport.txt", "boom")
+        put("xEdit/SSEEdit.exe", "")
+        put("xEdit/SSEEditQuickAutoClean.exe", "")
+        put("xEdit/SSEEdit_log.txt", "SSEEdit 4.1.5f (Quick Auto Clean) starting session 2026-11-15 11:15:11\n"
+            "[Removing \"Identical to Master\" records done]  Processed Records: 4131, Removed Records: 15, Elapsed Time: 00:00\n"
+            "[00:01] Saving: Some.esp.save.2026_11_15\n        itm: 15\nother line\n")
+        with open(os.path.join(tmp, "ModOrganizer.ini"), "a") as f: pass
+        cfg = open(os.path.join(tmp, "ModOrganizer.ini")).read()
+        cfg = cfg.replace("size=2", "size=4") + (f"3\\title=DynDOLOD\n3\\binary={tools_dir}/DynDOLOD/DynDOLODx64.exe\n"
+                                                 f"4\\title=QAC\n4\\binary={tools_dir}/xEdit/SSEEditQuickAutoClean.exe\n")
+        with open(os.path.join(tmp, "ModOrganizer.ini"), "w") as f: f.write(cfg)
+        e,t = call("read_log", {"log":"dyndolod"})
+        check("read_log dyndolod: newest non-debug log, last session, summary and bugreport",
+              not e and "DynDOLOD_SSE_log.txt" in t and "old run line" not in t and "Worldspace bounds" in t
+              and "last of 2 sessions" in t and "Topics: RootBlock" in t and "bugreport.txt found" in t)
+        e,t = call("read_log", {"log":"dyndolod", "session":False, "problems_only":True})
+        check("read_log problems_only and all sessions", "<Warning: old>" in t and "Worldspace bounds" in t and "Using Data Path" not in t)
+        e,t = call("read_log", {"log":"xedit"})
+        check("read_log xedit: Quick Auto Clean highlights",
+              not e and "What was cleaned and saved" in t and "Removed Records: 15" in t and "Saving: Some.esp" in t and "itm: 15" in t)
+        e,t = call("read_log", {"log":"texgen"}); check("read_log texgen without executable", e and "No texgen executable" in t)
+        e,t = call("read_log", {"log":"pandora"}); check("read_log pandora Engine.log from the output mod", not e and "Engine.log" in t and t.rstrip().endswith("ok"))
+        e,t = call("read_log", {"log":"skse"}); r=json.loads(t)
+        check("read_log skse lists logs", "CommunityShaders" in r["skse_logs"] and "skse64" in r["skse_logs"])
+        e,t = call("read_log", {"log":"skse", "name":"communityshaders", "problems_only":True})
+        check("read_log skse by name, problems only", not e and "old-format override" in t and "Zed 0-1-0" in t and "Alpha.ini" not in t)
+        os.environ["LOCALAPPDATA"] = tmp; put("../LOOT/LOOTDebugLog.txt", "[info]: LOOT version: 0.29.2\n")
+        e,t = call("read_log", {"log":"loot"}); check("read_log loot", not e and "LOOT version" in t)
         cache=json.loads(P.TOOLS_CACHE.read_text()); check("tools cache written", len(cache)==29)
     except Exception as ex:
         import traceback; traceback.print_exc(); failures.append(repr(ex))
