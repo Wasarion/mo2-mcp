@@ -86,7 +86,7 @@ class Org:
         os.makedirs(os.path.join(root,"logs"),exist_ok=True)
         with open(os.path.join(root,"logs","mo_interface.log"),"w") as f:
             f.write("\n".join(f"[I] line {i}" for i in range(10))+"\n[W] plugin warning here\n")
-        s.pending=[]; s.on_refresh=[]
+        s.pending=[]; s.on_refresh=[]; s.dm=DownloadManager(root)
         with open(os.path.join(root,"ModOrganizer.ini"),"w") as f:
             f.write("[customExecutables]\nsize=2\n1\\title=SSEEdit\n1\\binary=H:/Tools/SSEEdit/SSEEdit.exe\n1\\arguments=\n1\\workingDirectory=\n2\\title=LOOT\n2\\binary=H:/Tools/LOOT/LOOT.exe\n2\\arguments=\n2\\workingDirectory=\n")
     def modList(s): return s.ml
@@ -117,6 +117,24 @@ class Org:
         p=os.path.join(s.modsPath(),str(name)); os.makedirs(p); s.pending.append(str(name)); return Mod(str(name),p,str(name).endswith("_separator"))
     def startApplication(s,exe,args=[],cwd=""): s.started.append(exe); return 1234
     def installMod(s,path,name=""): return None
+    def downloadManager(s): return s.dm
+
+class DownloadManager:
+    """Fake: file 1 completes after a moment, file 2 fails, file 3 never finishes."""
+    def __init__(s, root): s.root=root; s.cbs={}; s.started=[]; s.paths={}
+    def _on(s,kind,cb): s.cbs.setdefault(kind,[]).append(cb); return True
+    def onDownloadComplete(s,cb): return s._on("complete",cb)
+    def onDownloadFailed(s,cb): return s._on("failed",cb)
+    def onDownloadPaused(s,cb): return s._on("paused",cb)
+    def onDownloadRemoved(s,cb): return s._on("removed",cb)
+    def downloadPath(s,i): return s.paths[i]
+    def startDownloadNexusFile(s,mod_id,file_id):
+        i=len(s.started); s.started.append((mod_id,file_id))
+        s.paths[i]=os.path.join(s.root,"downloads",f"Mod {mod_id}-{file_id}.7z")
+        kind={1:"complete",2:"failed"}.get(file_id)
+        if kind:  # MO2 reports the end later, on the GUI thread
+            QTimer.singleShot(200, lambda: [cb(i) for cb in s.cbs.get(kind,[])])
+        return i
 
 class FakeBackend:
     def __init__(s): s.alive=True
@@ -174,7 +192,7 @@ def client():
         except urllib.error.HTTPError as e: code = e.code
         check("browser Origin -> 403", code==403)
         st,r = rpc("tools/list"); names=[t["name"] for t in r["result"]["tools"]]
-        check("tools/list has 19 tools", len(names)==19)
+        check("tools/list has 21 tools", len(names)==21)
         e,t = call("get_status"); s=json.loads(t)
         check("get_status counts", not e and s["mods"]=={"total":4,"enabled":3,"separators":2} and s["plugins"]["enabled"]==3)
         e,t = call("list_mods", {"separator":"Fixes"}); print(t)
@@ -234,7 +252,18 @@ def client():
         os.makedirs(org.downloadsPath(),exist_ok=True); open(os.path.join(org.downloadsPath(),"a.7z"),"w").close()
         e,t = call("install_mod", {"archive":"a.7z"}); check("install declined in dialog -> isError", e and "declined" in t)
         e,t = call("install_mod", {"archive":"missing.7z"}); check("install missing archive", e and "not found" in t)
-        cache=json.loads(P.TOOLS_CACHE.read_text()); check("tools cache written", len(cache)==19)
+        e,t = call("download_mod", {"mod_id":199063,"file_id":1}); d=json.loads(t)
+        check("download completes + archive name", not e and d["status"]=="complete" and d["archive"]=="Mod 199063-1.7z"
+              and org.dm.started==[(199063,1)])
+        e,t = call("download_mod", {"mod_id":185412,"file_id":2}); d=json.loads(t)
+        check("failed download reported", not e and d["status"]=="failed" and "archive" not in d)
+        e,t = call("download_mod", {"mod_id":196070,"file_id":3,"wait_seconds":1}); d=json.loads(t)
+        check("slow download keeps going", not e and d["status"]=="downloading" and "wait_for_download" in d["note"])
+        e,t = call("wait_for_download", {"download_id":d["download_id"],"timeout_seconds":1})
+        check("wait_for_download still downloading", not e and json.loads(t)["status"]=="downloading")
+        e,t = call("wait_for_download", {"download_id":99}); check("wait for unknown download refused", e and "Unknown" in t)
+        e,t = call("download_mod", {"mod_id":0,"file_id":5}); check("bad mod id refused", e and "positive" in t)
+        cache=json.loads(P.TOOLS_CACHE.read_text()); check("tools cache written", len(cache)==21)
     except Exception as ex:
         import traceback; traceback.print_exc(); failures.append(repr(ex))
     finally:

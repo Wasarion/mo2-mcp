@@ -4,7 +4,7 @@ An [MCP](https://modelcontextprotocol.io) server that runs **inside Mod Organize
 
 No screenshots, no clicking, no extra runtimes: the plugin uses MO2's own Python and the Python standard library, and the bridge is a PowerShell script that ships with Windows.
 
-> Status: early (v0.2.1). Tested on MO2 2.5.2 with Skyrim Special Edition. Feedback and pull requests welcome.
+> Status: early (v0.3.0). Tested on MO2 2.5.2 with Skyrim Special Edition. Feedback and pull requests welcome.
 
 ## How it works
 
@@ -34,6 +34,7 @@ AI client ⇄ (stdio) ⇄ bridge.ps1 ⇄ (HTTP, 127.0.0.1 + token) ⇄ mo2_mcp p
 | `create_separator` / `rename_mod` | Add a separator (optionally placed), rename mods and separators |
 | `run_executable` / `wait_for_run` / `list_runs` | Start a configured executable through the VFS, wait for it, refresh afterwards |
 | `install_mod` | Install an archive — **only after the user confirms a Yes/No dialog in MO2** |
+| `download_mod` / `wait_for_download` | Download a Nexus file into MO2's downloads folder through MO2's own Nexus login (needs Nexus Premium), and wait for it |
 
 Read-only tools are marked `readOnlyHint` so clients can auto-approve them.
 
@@ -67,6 +68,7 @@ Requirements: Windows, Mod Organizer 2 **2.5.x** (with its Python plugin support
 
 - Listens on `127.0.0.1` only; requests need the token from `connection.json`, a local `Host` header and no browser `Origin` header.
 - `install_mod` always shows a Yes/No dialog in MO2. Changes are refused while a program started with `run_executable` is still running.
+- `download_mod` uses MO2's own Nexus login (`IDownloadManager.startDownloadNexusFile`). The plugin never reads, stores or returns your Nexus API key. It shows no dialog in MO2, so the AI is told to download only files you approved in chat; the download only lands in MO2's downloads folder, and installing it still goes through `install_mod`'s dialog.
 - `connection.json` and `tools.json` are machine-specific and must never be committed (see `.gitignore`).
 - Anything that can read your user profile can read the token — the same trust boundary as MO2 itself. See [SECURITY.md](SECURITY.md).
 
@@ -80,7 +82,7 @@ QT_QPA_PLATFORM=offscreen python tests/test_e2e.py   # end-to-end test against a
 
 The test starts the real plugin and HTTP server against a fake organizer (`tests/mobase.py` is a tiny runtime stand-in for `mobase`) and exercises every tool over HTTP.
 
-Not yet verified against a live MO2: `install_mod`, `set_plugin_priority`, `set_plugins_enabled`, `run_executable`, `create_separator`, `rename_mod`. Reports welcome.
+Not yet verified against a live MO2: `download_mod`, `wait_for_download`, `install_mod`, `set_plugin_priority`, `set_plugins_enabled`, `run_executable`, `create_separator`, `rename_mod`. Reports welcome.
 
 ## Roadmap / help wanted
 

@@ -7,6 +7,7 @@ approach of Antiarc123's "MCP - MO2" plugin (Nexus Mods site mod 2549, GPL-3.0-o
 from __future__ import annotations
 
 import collections
+import logging
 import os
 import re
 import threading
@@ -18,7 +19,9 @@ from PyQt6.QtCore import QSettings
 from .mcp import Tool, ToolError
 from .procs import RunTracker
 
-MAX_WAIT = 600  # seconds one wait_for_run call may block
+log = logging.getLogger("mo2_mcp")
+
+MAX_WAIT = 600  # seconds one wait_for_run or wait_for_download call may block
 REFRESH_WAIT = 120  # seconds to wait for MO2 to finish a refresh
 BAD_NAME = re.compile(r'[\\/:*?"<>|]')
 
@@ -63,6 +66,11 @@ class Mo2Tools:
         self.runs = runs
         self.confirm_install = confirm_install
         self.invoke = invoke  # run something on the GUI thread (for worker-thread tools)
+        # Downloads started by download_mod: MO2 reports their end through callbacks on the GUI thread.
+        self._dl_lock = threading.Lock()
+        self._dl_events: dict[int, threading.Event] = {}
+        self._dl_state: dict[int, str] = {}
+        self._dl_hooked = False
 
     # -- helpers ---------------------------------------------------------------
     def _mod_name(self, name: str) -> str:
@@ -110,6 +118,41 @@ class Mo2Tools:
 
         self.invoke(start, 60)
         return done.wait(timeout)
+
+    def _hook_downloads(self) -> None:
+        """Register MO2's download callbacks once. GUI thread only."""
+        if self._dl_hooked:
+            return
+        dm = self.org.downloadManager()
+        for register, state in ((dm.onDownloadComplete, "complete"), (dm.onDownloadFailed, "failed"),
+                                (dm.onDownloadPaused, "paused"), (dm.onDownloadRemoved, "removed")):
+            register(lambda dl_id, state=state: self._download_ended(int(dl_id), state))
+        self._dl_hooked = True
+
+    def _download_event(self, dl_id: int) -> threading.Event:
+        with self._dl_lock:
+            return self._dl_events.setdefault(dl_id, threading.Event())
+
+    def _download_ended(self, dl_id: int, state: str) -> None:
+        with self._dl_lock:
+            self._dl_state[dl_id] = state
+        self._download_event(dl_id).set()
+
+    def _download_result(self, dl_id: int, timeout: float) -> dict[str, Any]:
+        """Wait up to timeout for a download to end and describe it. Worker threads only."""
+        finished = self._download_event(dl_id).wait(timeout)
+        with self._dl_lock:
+            state = self._dl_state.get(dl_id, "downloading")
+        result: dict[str, Any] = {"download_id": dl_id, "status": state}
+        if finished and state == "complete":
+            path = str(self.invoke(lambda: self.org.downloadManager().downloadPath(dl_id), 60))
+            result |= {"archive": os.path.basename(path), "path": path,
+                       "note": "Install it with install_mod (archive name above) once the user agrees."}
+        elif not finished:
+            result["note"] = "Still downloading; call wait_for_download again."
+        else:
+            result["note"] = f"The download ended as '{state}'. MO2's Downloads tab and read_log show why."
+        return result
 
     # -- read tools --------------------------------------------------------------
     def get_status(self, args: dict[str, Any]) -> Any:
@@ -458,6 +501,31 @@ class Mo2Tools:
             result["note"] = "Still running; call wait_for_run again."
         return result
 
+    def download_mod(self, args: dict[str, Any]) -> Any:
+        """Start a Nexus download through MO2. MO2 uses its own Nexus login; this plugin never sees the API key."""
+        mod_id, file_id = int(args["mod_id"]), int(args["file_id"])
+        if mod_id <= 0 or file_id <= 0:
+            raise ToolError("mod_id and file_id must be positive Nexus ids (from the mod page's Files tab).")
+        timeout = min(float(args.get("wait_seconds", 300)), MAX_WAIT)
+
+        def start() -> int:
+            self._hook_downloads()
+            return int(self.org.downloadManager().startDownloadNexusFile(mod_id, file_id))
+
+        dl_id = self.invoke(start, 60)
+        if dl_id < 0:
+            raise ToolError("MO2 could not start the download. Is MO2 logged in to Nexus (Settings > Nexus)? See read_log.")
+        log.info(f"Claude MCP: download {dl_id} started for Nexus mod {mod_id}, file {file_id}")
+        return {"mod_id": mod_id, "file_id": file_id} | self._download_result(dl_id, timeout)
+
+    def wait_for_download(self, args: dict[str, Any]) -> Any:
+        dl_id = int(args["download_id"])
+        with self._dl_lock:
+            known = dl_id in self._dl_events
+        if not known:
+            raise ToolError("Unknown download_id. Only downloads started with download_mod can be waited for.")
+        return self._download_result(dl_id, min(float(args.get("timeout_seconds", 120)), MAX_WAIT))
+
     # -- registry ---------------------------------------------------------------------
     def tools(self) -> list[Tool]:
         s = {"type": "string"}
@@ -505,4 +573,10 @@ class Mo2Tools:
                  self.wait_for_run, ["run_id"], main_thread=False, timeout=MAX_WAIT + 70),
             Tool("install_mod", "Install an archive from the downloads folder (or an absolute path). ONLY after the user approved this exact install in chat; MO2 also asks them to confirm. Installer dialogs (FOMOD) appear in MO2 for the user.",
                  {"archive": s, "name": s}, self.install_mod, ["archive"], writes=True, timeout=1800),
+            Tool("download_mod", "Download a Nexus file into MO2's downloads folder through MO2's own Nexus login (needs Premium). ONLY after the user approved this exact file (mod name, file name, Nexus page) in chat. Get mod_id and file_id from the mod page's Files tab. Waits up to wait_seconds (default 300) and returns the archive name for install_mod.",
+                 {"mod_id": {"type": "integer"}, "file_id": {"type": "integer"}, "wait_seconds": {"type": "integer"}},
+                 self.download_mod, ["mod_id", "file_id"], writes=True, main_thread=False, timeout=MAX_WAIT + 70),
+            Tool("wait_for_download", f"Wait (max {MAX_WAIT} s per call) for a download started with download_mod to finish.",
+                 {"download_id": {"type": "integer"}, "timeout_seconds": {"type": "integer"}},
+                 self.wait_for_download, ["download_id"], main_thread=False, timeout=MAX_WAIT + 70),
         ]

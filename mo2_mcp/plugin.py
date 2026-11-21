@@ -24,7 +24,7 @@ from .tools import Mo2Tools
 # MO2's log handler prints the raw message without %-formatting, so log with f-strings.
 log = logging.getLogger("mo2_mcp")
 
-VERSION = "0.2.1"
+VERSION = "0.3.0"
 HERE = Path(__file__).resolve().parent
 CONNECTION_FILE = HERE / "connection.json"   # port + token, read by bridge.ps1
 TOOLS_CACHE = HERE / "tools.json"            # tool list for the bridge while MO2 is closed
@@ -34,6 +34,7 @@ INSTRUCTIONS = """Controls the user's running Mod Organizer 2 instance.
 - Read before you change: get_status, list_mods, list_plugins.
 - Mod priority 0 is the top of the left pane; higher priority wins file conflicts.
 - Never install a mod unless the user approved that exact archive in chat. MO2 also asks them to confirm.
+- Never download a Nexus file (download_mod) unless the user approved that exact file in chat.
 - Changes are refused while a program started with run_executable is still running.
 - After xEdit, DynDOLOD, Nemesis/Pandora etc. write output, refresh (wait_for_run does it for you)."""
 
