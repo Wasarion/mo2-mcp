@@ -4,7 +4,7 @@ An [MCP](https://modelcontextprotocol.io) server that runs **inside Mod Organize
 
 No screenshots, no clicking, no extra runtimes: the plugin uses MO2's own Python and the Python standard library, and the bridge is a PowerShell script that ships with Windows.
 
-> Status: early (v0.3.0). Tested on MO2 2.5.2 with Skyrim Special Edition. Feedback and pull requests welcome.
+> Status: early (v0.3.1). Tested on MO2 2.5.2 with Skyrim Special Edition. Feedback and pull requests welcome.
 
 ## How it works
 
@@ -82,7 +82,7 @@ QT_QPA_PLATFORM=offscreen python tests/test_e2e.py   # end-to-end test against a
 
 The test starts the real plugin and HTTP server against a fake organizer (`tests/mobase.py` is a tiny runtime stand-in for `mobase`) and exercises every tool over HTTP.
 
-Not yet verified against a live MO2: `download_mod`, `wait_for_download`, `install_mod`, `set_plugin_priority`, `set_plugins_enabled`, `run_executable`, `create_separator`, `rename_mod`. Reports welcome.
+Not yet verified against a live MO2: `wait_for_download`, `install_mod`, `set_plugin_priority`, `set_plugins_enabled`, `run_executable`, `create_separator`, `rename_mod`. Reports welcome.
 
 ## Roadmap / help wanted
 

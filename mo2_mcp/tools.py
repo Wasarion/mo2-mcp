@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import threading
+import time
 from typing import Any, Callable
 
 import mobase
@@ -66,11 +67,10 @@ class Mo2Tools:
         self.runs = runs
         self.confirm_install = confirm_install
         self.invoke = invoke  # run something on the GUI thread (for worker-thread tools)
-        # Downloads started by download_mod: MO2 reports their end through callbacks on the GUI thread.
+        # Downloads started by download_mod, keyed by our own id: (mod_id, file_id, start time, downloads folder).
+        # MO2's own download ids are not stable (its list is re-sorted), so finished archives are found by their .meta.
         self._dl_lock = threading.Lock()
-        self._dl_events: dict[int, threading.Event] = {}
-        self._dl_state: dict[int, str] = {}
-        self._dl_hooked = False
+        self._downloads: dict[int, tuple[int, int, float, str]] = {}
 
     # -- helpers ---------------------------------------------------------------
     def _mod_name(self, name: str) -> str:
@@ -119,40 +119,51 @@ class Mo2Tools:
         self.invoke(start, 60)
         return done.wait(timeout)
 
-    def _hook_downloads(self) -> None:
-        """Register MO2's download callbacks once. GUI thread only."""
-        if self._dl_hooked:
-            return
-        dm = self.org.downloadManager()
-        for register, state in ((dm.onDownloadComplete, "complete"), (dm.onDownloadFailed, "failed"),
-                                (dm.onDownloadPaused, "paused"), (dm.onDownloadRemoved, "removed")):
-            register(lambda dl_id, state=state: self._download_ended(int(dl_id), state))
-        self._dl_hooked = True
-
-    def _download_event(self, dl_id: int) -> threading.Event:
-        with self._dl_lock:
-            return self._dl_events.setdefault(dl_id, threading.Event())
-
-    def _download_ended(self, dl_id: int, state: str) -> None:
-        with self._dl_lock:
-            self._dl_state[dl_id] = state
-        self._download_event(dl_id).set()
+    @staticmethod
+    def _find_download(folder: str, mod_id: int, file_id: int, since: float) -> str | None:
+        """Newest finished archive in folder whose .meta names this Nexus mod and file, written after since."""
+        best: tuple[float, str] | None = None
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            return None
+        for meta in names:
+            if not meta.lower().endswith(".meta"):
+                continue
+            archive = meta[:-5]
+            path = os.path.join(folder, archive)
+            if archive.lower().endswith(".unfinished") or not os.path.isfile(path):
+                continue
+            mtime = os.path.getmtime(path)
+            if mtime < since:
+                continue
+            try:
+                with open(os.path.join(folder, meta), encoding="utf-8", errors="replace") as f:
+                    keys = dict(line.strip().split("=", 1) for line in f if "=" in line)
+            except OSError:
+                continue
+            if keys.get("modID") == str(mod_id) and keys.get("fileID") == str(file_id):
+                if best is None or mtime > best[0]:
+                    best = (mtime, archive)
+        return best[1] if best else None
 
     def _download_result(self, dl_id: int, timeout: float) -> dict[str, Any]:
-        """Wait up to timeout for a download to end and describe it. Worker threads only."""
-        finished = self._download_event(dl_id).wait(timeout)
+        """Wait up to timeout for the archive to appear in the downloads folder. Worker threads only."""
         with self._dl_lock:
-            state = self._dl_state.get(dl_id, "downloading")
-        result: dict[str, Any] = {"download_id": dl_id, "status": state}
-        if finished and state == "complete":
-            path = str(self.invoke(lambda: self.org.downloadManager().downloadPath(dl_id), 60))
-            result |= {"archive": os.path.basename(path), "path": path,
-                       "note": "Install it with install_mod (archive name above) once the user agrees."}
-        elif not finished:
-            result["note"] = "Still downloading; call wait_for_download again."
-        else:
-            result["note"] = f"The download ended as '{state}'. MO2's Downloads tab and read_log show why."
-        return result
+            mod_id, file_id, since, folder = self._downloads[dl_id]
+        deadline = time.monotonic() + timeout
+        while True:
+            archive = self._find_download(folder, mod_id, file_id, since)
+            if archive or time.monotonic() >= deadline:
+                break
+            time.sleep(1.0)
+        result: dict[str, Any] = {"download_id": dl_id}
+        if archive:
+            return result | {"status": "complete", "archive": archive,
+                             "note": "Install it with install_mod (archive name above) once the user agrees."}
+        return result | {"status": "not finished",
+                         "note": "Not in the downloads folder yet; call wait_for_download again. "
+                                 "If MO2's Downloads tab shows it as failed or paused, tell the user."}
 
     # -- read tools --------------------------------------------------------------
     def get_status(self, args: dict[str, Any]) -> Any:
@@ -508,20 +519,24 @@ class Mo2Tools:
             raise ToolError("mod_id and file_id must be positive Nexus ids (from the mod page's Files tab).")
         timeout = min(float(args.get("wait_seconds", 300)), MAX_WAIT)
 
-        def start() -> int:
-            self._hook_downloads()
-            return int(self.org.downloadManager().startDownloadNexusFile(mod_id, file_id))
+        since = time.time() - 2  # small margin for file-system timestamp rounding
 
-        dl_id = self.invoke(start, 60)
-        if dl_id < 0:
+        def start() -> tuple[int, str]:
+            return int(self.org.downloadManager().startDownloadNexusFile(mod_id, file_id)), self.org.downloadsPath()
+
+        mo2_id, folder = self.invoke(start, 60)
+        if mo2_id < 0:
             raise ToolError("MO2 could not start the download. Is MO2 logged in to Nexus (Settings > Nexus)? See read_log.")
+        with self._dl_lock:
+            dl_id = len(self._downloads) + 1
+            self._downloads[dl_id] = (mod_id, file_id, since, folder)
         log.info(f"Claude MCP: download {dl_id} started for Nexus mod {mod_id}, file {file_id}")
         return {"mod_id": mod_id, "file_id": file_id} | self._download_result(dl_id, timeout)
 
     def wait_for_download(self, args: dict[str, Any]) -> Any:
         dl_id = int(args["download_id"])
         with self._dl_lock:
-            known = dl_id in self._dl_events
+            known = dl_id in self._downloads
         if not known:
             raise ToolError("Unknown download_id. Only downloads started with download_mod can be waited for.")
         return self._download_result(dl_id, min(float(args.get("timeout_seconds", 120)), MAX_WAIT))
