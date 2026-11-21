@@ -222,7 +222,7 @@ def client():
         except urllib.error.HTTPError as e: code = e.code
         check("browser Origin -> 403", code==403)
         st,r = rpc("tools/list"); names=[t["name"] for t in r["result"]["tools"]]
-        check("tools/list has 29 tools", len(names)==29)
+        check("tools/list has 30 tools", len(names)==30)
         e,t = call("get_status"); s=json.loads(t)
         check("get_status counts", not e and s["mods"]=={"total":4,"enabled":3,"separators":2} and s["plugins"]["enabled"]==3)
         e,t = call("list_mods", {"separator":"Fixes"}); print(t)
@@ -583,7 +583,49 @@ def client():
         check("read_log skse by name, problems only", not e and "old-format override" in t and "Zed 0-1-0" in t and "Alpha.ini" not in t)
         os.environ["LOCALAPPDATA"] = tmp; put("../LOOT/LOOTDebugLog.txt", "[info]: LOOT version: 0.29.2\n")
         e,t = call("read_log", {"log":"loot"}); check("read_log loot", not e and "LOOT version" in t)
-        cache=json.loads(P.TOOLS_CACHE.read_text()); check("tools cache written", len(cache)==29)
+        # -- LOOT --
+        ldir = os.path.join(tmp, "LOOT", "games", "Skyrim Special Edition")
+        os.makedirs(os.path.join(ldir, "backups"), exist_ok=True)
+        with open(os.path.join(ldir, "old_messages.json"), "w") as f:
+            json.dump({"messages": [{"text": "Your **SKSE** is up-to-date."},
+                                    {"pluginName": "AsIs.esp", "text": "Read the [Compatibility Notes](https://x/y)."},
+                                    {"pluginName": "NotInstalled.esp", "text": "ignored"}]}, f)
+        with open(os.path.join(ldir, "backups", "loadorder.1.json"), "w") as f:
+            json.dump({"loadOrder": ["Skyrim.esm", "Update.esm", "Big.esp", "EngineFixes.esp"]}, f)
+        e,t = call("loot_sort", {"dry_run": True}); r=json.loads(t)
+        check("loot_sort dry run: messages, last sort, nothing started",
+              not e and r["executable"]=="LOOT" and r["would_run"]=="--auto-sort" and org.started[-1]!="LOOT2"
+              and r["general_messages"]==["Your SKSE is up-to-date."]
+              and r["plugin_messages"]=={"AsIs.esp":["Read the Compatibility Notes (https://x/y)."]}
+              and r["last_sort"]["moved_since_then"]==[{"plugin":"EngineFixes.esp","from":3,"to":2}])
+        started_before = len(org.started); seen_args = []
+        real_start = org.startApplication
+        def loot_start(exe, args=[], cwd=""):
+            seen_args.append(list(args))
+            order = org.pl.order; order.remove("Big.esp"); order.insert(3, "Big.esp")  # LOOT moves one plugin
+            return real_start(exe, args, cwd)
+        org.startApplication = loot_start
+        e,t = call("loot_sort"); r=json.loads(t)
+        check("loot_sort runs standalone LOOT with --auto-sort and lists what moved",
+              not e and org.started[started_before:]==["LOOT"] and seen_args==[["--auto-sort"]]
+              and r["run"]["status"]=="finished" and r["refreshed"] is True
+              and r["moved"]==[{"plugin":"Big.esp","from":6,"to":3}]
+              and r["summary"]=="1 plugin(s) moved" and "messages_note" in r)
+        # LOOT set to show its "no changes" dialog: it sorts, then waits instead of quitting.
+        with open(os.path.join(tmp, "LOOT", "settings.toml"), "w") as f: f.write("useNoSortingChangesDialog = true\n")
+        def loot_waits(exe, args=[], cwd=""):
+            with open(os.path.join(tmp, "LOOT", "LOOTDebugLog.txt"), "w") as f:
+                f.write("[info]: Beginning sorting operation.\n[info]: Sorting operation complete.\n")
+            return real_start(exe, args, cwd)
+        org.startApplication = loot_waits; backend.alive = True
+        t0 = time.time(); e,t = call("loot_sort"); r=json.loads(t)
+        check("loot_sort notices LOOT waiting at its no-changes dialog",
+              not e and r["run"]["status"]=="running" and "Sorting made no" in r["note"] and r["moved"]==[]
+              and time.time() - t0 < 30)
+        backend.alive = False
+        e,t = call("wait_for_run", {"run_id": r["run"]["run_id"], "timeout_seconds": 5, "refresh": False})
+        org.startApplication = real_start
+        cache=json.loads(P.TOOLS_CACHE.read_text()); check("tools cache written", len(cache)==30)
     except Exception as ex:
         import traceback; traceback.print_exc(); failures.append(repr(ex))
     finally:

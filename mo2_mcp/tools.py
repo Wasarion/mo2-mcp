@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import QApplication, QComboBox, QDialog, QMainWindow, QTree
 
 from .mcp import Tool, ToolError
 from .espm import light_verdict, read_plugin
-from . import outputs, toollogs
+from . import loot, outputs, toollogs
 from .cshaders import ini_version, parse_cs_log
 from .procs import RunTracker
 from .skse import dll_file_version, parse_skse_log
@@ -1266,6 +1266,95 @@ class Mo2Tools:
             result["note"] = "Still running; call wait_for_run again."
         return result
 
+    def loot_sort(self, args: dict[str, Any]) -> Any:
+        """Sort with the standalone LOOT (an executable configured in MO2), never MO2's built-in sort."""
+        exes = self.invoke(lambda: self.list_executables({}), 30)
+        wanted = str(args.get("executable", "")).strip().lower()
+        candidates = [e for e in exes if (e["title"].lower() == wanted if wanted
+                                          else os.path.basename(str(e["binary"])).lower() == "loot.exe")]
+        if not candidates:
+            raise ToolError("No standalone LOOT is configured in MO2's executables (binary LOOT.exe)."
+                            if not wanted else f"No MO2 executable titled '{args.get('executable')}'.")
+        exe = candidates[0]
+
+        def state() -> tuple[list[str], str]:
+            pl = self.org.pluginList()
+            return sorted(pl.pluginNames(), key=pl.priority), self.org.managedGame().gameName()
+
+        before, game_name = self.invoke(state, 30)
+        local = os.environ.get("LOCALAPPDATA", "")
+        game_dir = loot.data_dir(local, game_name)
+
+        def fmt(t: float) -> str:
+            return time.strftime("%Y-%m-%d %H:%M", time.localtime(t))
+
+        def add_messages(result: dict[str, Any], since: float | None) -> None:
+            found = loot.messages(game_dir) if game_dir else None
+            if found is None:
+                result["messages"] = "LOOT has not saved any messages yet."
+                return
+            general, per_plugin, saved = found
+            enabled = {p.lower() for p in after}
+            result["messages_saved"] = fmt(saved)
+            if since is not None and saved < since:
+                result["messages_note"] = "LOOT did not save new messages in this run; these are from its last normal run."
+            result["general_messages"] = general
+            result["plugin_messages"] = {p: m for p, m in per_plugin.items() if p.lower() in enabled}
+
+        after = before
+        if args.get("dry_run"):
+            result: dict[str, Any] = {"executable": exe["title"], "binary": exe["binary"],
+                                      "would_run": f"{exe['arguments']} --auto-sort".strip()}
+            backup = loot.latest_backup(game_dir) if game_dir else None
+            if backup:
+                result["last_sort"] = {"applied": fmt(backup[0]),
+                                       "moved_since_then": loot.moved(backup[1], before)}
+            add_messages(result, None)
+            result["note"] = ("Nothing was sorted. 'moved_since_then' compares the order before LOOT's last sort with "
+                              "today's, so manual moves since then show up too.")
+            return result
+
+        started = time.time()
+        args_list = [a for a in [str(exe["arguments"] or "").strip(), "--auto-sort"] if a]
+        run = self.invoke(lambda: self.run_executable({"executable": exe["title"], "args": args_list}), 60)
+        timeout = min(float(args.get("timeout_seconds", 300)), MAX_WAIT)
+        tracked = self.runs.get(int(run["run_id"]))
+        assert tracked is not None
+        dialog = loot.shows_no_changes_dialog(local)
+        deadline = time.time() + timeout
+        done_at = None
+        while tracked.running and time.time() < deadline:
+            self.runs.wait(tracked, 2)
+            if tracked.running and dialog and loot.sort_done(local, started - 2):
+                done_at = done_at or time.time()
+                if time.time() - done_at > 8:  # sorted, but LOOT did not quit: it is waiting at its dialog
+                    break
+        result = {"run": tracked.describe()}
+        if tracked.running:
+            if done_at:
+                result["note"] = ("LOOT has sorted and found no changes, and is now showing its 'Sorting made no "
+                                  "changes' dialog. Click OK in LOOT and it quits; nothing needs to be applied. To "
+                                  "skip that dialog next time, turn it off in LOOT's settings.")
+                result["moved"] = []
+                result["summary"] = "LOOT changed nothing"
+            else:
+                result["note"] = ("LOOT is still running (it may be showing a dialog). Finish it, then call "
+                                  "wait_for_run with this run_id and run loot_sort with dry_run=true to see the result.")
+            return result
+        result["refreshed"] = self._refresh_and_wait()
+        after = self.invoke(lambda: sorted(self.org.pluginList().pluginNames(), key=self.org.pluginList().priority), 30)
+        changes = loot.moved(before, after)
+        result["moved"] = changes
+        result["summary"] = f"{len(changes)} plugin(s) moved" if changes else "LOOT changed nothing"
+        problems = loot.debug_problems(local)
+        if problems:
+            result["loot_log_problems"] = problems[-20:]
+        add_messages(result, started)
+        if changes and game_dir:
+            result["previous_order"] = (f"LOOT saved the order before this sort in {os.path.join(game_dir, 'backups')}; "
+                                        "set_plugin_priority can move single plugins back.")
+        return result
+
     def download_mod(self, args: dict[str, Any]) -> Any:
         """Start a Nexus download through MO2. MO2 uses its own Nexus login; this plugin never sees the API key."""
         mod_id, file_id = int(args["mod_id"]), int(args["file_id"])
@@ -1383,6 +1472,12 @@ class Mo2Tools:
             Tool("wait_for_run", f"Wait (max {MAX_WAIT} s per call) for a started program to finish; refreshes MO2 afterwards unless refresh=false.",
                  {"run_id": {"type": "integer"}, "timeout_seconds": {"type": "integer"}, "refresh": b},
                  self.wait_for_run, ["run_id"], main_thread=False, timeout=MAX_WAIT + 70),
+            Tool("loot_sort", "Sort the load order with the standalone LOOT configured in MO2's executables (not MO2's "
+                 "built-in sort): runs it with --auto-sort through the VFS (sort, apply, quit), waits, refreshes and "
+                 "lists the plugins that moved and LOOT's messages for enabled plugins. dry_run=true sorts nothing and "
+                 "shows LOOT's last messages and what its last sort moved.",
+                 {"executable": s, "dry_run": b, "timeout_seconds": {"type": "integer"}},
+                 self.loot_sort, writes=True, main_thread=False, timeout=MAX_WAIT + 200),
             Tool("install_mod", "Install an archive from the downloads folder (or an absolute path). ONLY after the user approved this exact install in chat; MO2 also asks them to confirm. Installer dialogs (FOMOD) appear in MO2 for the user.",
                  {"archive": s, "name": s}, self.install_mod, ["archive"], writes=True, timeout=1800),
             Tool("download_mod", "Download a Nexus file into MO2's downloads folder through MO2's own Nexus login (needs Premium). ONLY after the user approved this exact file (mod name, file name, Nexus page) in chat. Get mod_id and file_id from the mod page's Files tab. Waits up to wait_seconds (default 300) and returns the archive name for install_mod.",
