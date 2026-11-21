@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import QApplication, QComboBox, QDialog, QMainWindow, QTree
 
 from .mcp import Tool, ToolError
 from .espm import light_verdict, read_plugin
+from . import outputs
 from .procs import RunTracker
 from .skse import dll_file_version, parse_skse_log
 
@@ -522,6 +523,165 @@ class Mo2Tools:
                           "existing save. xEdit (-PseudoESL) and ESLifier also check facegen and INI references.")
         return result
 
+    def check_outputs(self, args: dict[str, Any]) -> Any:
+        names = args.get("names")
+        max_mods = max(1, int(args.get("max_mods", 15)))
+
+        def collect() -> tuple[list[tuple[str, str, bool]], list[str] | None, list[str], str]:
+            ml = self.org.modList()
+            pl = self.org.pluginList()
+            mods = []
+            for name in self._mods_in_order():
+                mod = ml.getMod(name)
+                if not mod.isSeparator():
+                    mods.append((name, mod.absolutePath(), _flag(ml.state(name), mobase.ModState.ACTIVE)))
+            chosen = [self._mod_name(n) for n in names] if names else None
+            enabled = sorted((p for p in pl.pluginNames() if pl.state(p) == mobase.PluginState.ACTIVE), key=pl.priority)
+            return mods, chosen, enabled, self.org.profilePath()
+
+        mods, chosen, enabled_plugins, profile_dir = self.invoke(collect, 60)
+        kinds = {n: outputs.detect_kind(path) for n, path, _ in mods if "output" in n.lower()}
+        if chosen is not None:
+            kinds |= {n: outputs.detect_kind(path) for n, path, _ in mods if n in chosen}
+        targets = chosen if chosen is not None else [n for n in kinds]
+
+        def fmt(t: float) -> str:
+            return time.strftime("%Y-%m-%d %H:%M", time.localtime(t))
+
+        made: dict[str, tuple[str, float]] = {}  # output mod -> (kind, when it was made)
+        report: list[tuple[int, dict[str, Any]]] = []
+        not_checked: list[dict[str, str]] = []
+        paths = {n: (p, on) for n, p, on in mods}
+        for name in targets:
+            kind = kinds.get(name)
+            t = outputs.made_time(paths[name][0])
+            if kind is None or t is None:
+                not_checked.append({"mod": name, "why": "empty" if t is None else
+                                    "not recognized as Pandora, PGPatcher, xLODGen, TexGen or DynDOLOD output"})
+                continue
+            made[name] = (kind, t)
+
+        # One pass over every enabled mod, keeping only files newer than the oldest output.
+        oldest = min((t for _, t in made.values()), default=None)
+        newer: dict[str, list[tuple[str, float]]] = {}
+        if oldest is not None:
+            for name, path, on in mods:
+                if on:
+                    files = outputs.changed_files(path, oldest + outputs.GRACE)
+                    if files:
+                        newer[name] = files
+
+        plugin_cache: dict[str, bool] = {}
+
+        def plugin_matters(path: str) -> bool:
+            if path not in plugin_cache:
+                plugin_cache[path] = outputs.plugin_matters(path)
+            return plugin_cache[path]
+
+        plugin_set = {p.lower() for p in enabled_plugins}
+        position = {p.lower(): i for i, p in enumerate(enabled_plugins)}
+        profile_times = {}
+        for fname in ("modlist.txt", "plugins.txt", "loadorder.txt"):
+            fpath = os.path.join(profile_dir, fname)
+            if os.path.isfile(fpath):
+                profile_times[fname] = os.path.getmtime(fpath)
+
+        for name, (kind, since) in made.items():
+            folder, enabled = paths[name]
+            row: dict[str, Any] = {"mod": name, "made_by": outputs.LABEL[kind], "made": fmt(since),
+                                   "watches": outputs.WATCHES[kind]}
+            reasons: list[str] = []
+            hints: list[str] = []
+            if not enabled:
+                row["mod_enabled"] = False
+            changed = []
+            for other, files in newer.items():
+                other_kind = kinds.get(other)
+                if other == name or (other_kind is not None and outputs.STAGE[other_kind] >= outputs.STAGE[kind]):
+                    continue
+                hits = sorted(((f, t) for f, t in files if t > since + outputs.GRACE and outputs.relevant(kind, f)
+                               and not (kind in outputs.LOD_KINDS and "/" not in f
+                                        and not plugin_matters(os.path.join(paths[other][0], f)))),
+                              key=lambda x: -x[1])
+                if hits:
+                    changed.append({"mod": other, "files": len(hits), "newest": fmt(hits[0][1]),
+                                    "examples": [f for f, _ in hits[:3]]})
+            changed.sort(key=lambda c: c["newest"], reverse=True)
+            if changed:
+                reasons.append(f"{len(changed)} enabled mod(s) have relevant files newer than the output")
+                row["changed_mods"] = changed[:max_mods]
+                if len(changed) > max_mods:
+                    row["more_changed_mods"] = len(changed) - max_mods
+
+            watch_files = ["modlist.txt"] + (["plugins.txt", "loadorder.txt"] if kind != "pandora" else [])
+            saved = [f for f in watch_files if profile_times.get(f, 0) > since + outputs.GRACE]
+            if saved:
+                row["profile_saved_after"] = saved
+                hints.append("the profile's " + " and ".join(saved) + (" were" if len(saved) > 1 else " was")
+                             + " saved after it (mods or plugins may have been enabled, disabled or moved; "
+                             "MO2 does not record what)")
+
+            # Plugins in the output: masters that are not enabled any more stop the game from loading.
+            for entry in sorted(os.listdir(folder)):
+                if not entry.lower().endswith(outputs.PLUGIN_EXT):
+                    continue
+                try:
+                    info = read_plugin(os.path.join(folder, entry))
+                except (OSError, ValueError, struct.error) as e:
+                    row.setdefault("plugins", []).append({"plugin": entry, "error": str(e)})
+                    continue
+                prow: dict[str, Any] = {"plugin": entry}
+                missing = [m for m in info.masters if m.lower() not in plugin_set]
+                if missing:
+                    prow["missing_masters"] = missing
+                    reasons.append(f"{entry} needs master(s) that are not enabled: {', '.join(missing)}")
+                if entry.lower() in position:
+                    after = enabled_plugins[position[entry.lower()] + 1:]
+                    if after and entry.lower() == "dyndolod.esp":  # it should load after what it covers
+                        prow["plugins_loading_after"] = after
+                else:
+                    prow["enabled"] = False
+                row.setdefault("plugins", []).append(prow)
+
+            if kind == "pandora":
+                last = outputs.pandora_last_run(folder)
+                installed: dict[str, tuple[str, str]] = {}
+                for other, path, on in mods:
+                    if on and other != name:
+                        for code, title in outputs.behavior_patches(path).items():
+                            installed[code] = (title, other)
+                if last is not None:
+                    gone = [c for c in last if c not in installed]
+                    new = [{"patch": installed[c][0], "mod": installed[c][1]} for c in sorted(installed) if c not in last]
+                    row["patches_in_last_run"] = [installed[c][0] if c in installed else c for c in last]
+                    if gone:
+                        row["patches_gone"] = gone
+                        reasons.append("patches used in the last run are no longer in an enabled mod: " + ", ".join(gone))
+                    if new:
+                        row["patches_not_in_last_run"] = new
+                        hints.append("some installed patches were not ticked in the last run (fine if you left them off "
+                                     "on purpose)")
+
+            if reasons:
+                row["verdict"] = "out of date: rerun " + outputs.LABEL[kind].split(" ")[0]
+            elif hints:
+                row["verdict"] = "no newer files found (see hints)"
+            else:
+                row["verdict"] = "up to date"
+            if reasons:
+                row["reasons"] = reasons
+            if hints:
+                row["hints"] = hints
+            report.append((outputs.STAGE[kind], row))
+
+        report.sort(key=lambda x: x[0])
+        result: dict[str, Any] = {"outputs": [row for _, row in report]}
+        if not_checked:
+            result["not_checked"] = not_checked
+        result["note"] = ("Compares file times only: a newer file means 'look again', not that the output is wrong. "
+                          "Disabled mods are ignored. It never reruns anything.")
+        return result
+
     def list_executables(self, args: dict[str, Any]) -> Any:
         s = QSettings(self._ini_path(), QSettings.Format.IniFormat)
         out = []
@@ -941,6 +1101,11 @@ class Mo2Tools:
                  "(Bethesda's own files skipped), with a count of full plugin slots. candidates_only keeps those that can "
                  "be flagged light without changing FormIDs. Reads files only.",
                  {"names": names, "candidates_only": b}, self.plugin_header, main_thread=False, timeout=900),
+            Tool("check_outputs", "Is generated output out of date? For each output mod (name contains 'Output', or the "
+                 "names given) made by Pandora, PGPatcher, xLODGen, TexGen or DynDOLOD: when it was made, enabled mods "
+                 "with relevant files newer than it, whether the profile's lists were saved since, missing masters of "
+                 "its plugins, and for Pandora the patches ticked in the last run. Reads files only.",
+                 {"names": names, "max_mods": {"type": "integer"}}, self.check_outputs, main_thread=False, timeout=900),
             Tool("list_executables", "Executables configured in MO2 (titles usable with run_executable).",
                  {}, self.list_executables),
             Tool("list_runs", "Programs started with run_executable and their status.",

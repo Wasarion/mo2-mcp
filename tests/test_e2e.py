@@ -222,7 +222,7 @@ def client():
         except urllib.error.HTTPError as e: code = e.code
         check("browser Origin -> 403", code==403)
         st,r = rpc("tools/list"); names=[t["name"] for t in r["result"]["tools"]]
-        check("tools/list has 27 tools", len(names)==27)
+        check("tools/list has 28 tools", len(names)==28)
         e,t = call("get_status"); s=json.loads(t)
         check("get_status counts", not e and s["mods"]=={"total":4,"enabled":3,"separators":2} and s["plugins"]["enabled"]==3)
         e,t = call("list_mods", {"separator":"Fixes"}); print(t)
@@ -442,7 +442,67 @@ def client():
                              "could_be_flagged_light_as_is":4,"full_plugins_if_flagged":6})
         e,t = call("plugin_header", {"candidates_only":True})
         check("candidates_only", sorted(x["plugin"] for x in json.loads(t)["plugins"])==["AsIs.esp","Cells.esp","Dependent.esp","Old170.esp","Overrides.esp"])
-        cache=json.loads(P.TOOLS_CACHE.read_text()); check("tools cache written", len(cache)==27)
+        # -- generated output out of date? --
+        T0 = time.time() + 100000  # in the future, so files from earlier tests are older
+        def add_mod(name, files, active=True):
+            root = os.path.join(org.modsPath(), name)
+            for rel, (content, age) in files.items():
+                path = os.path.join(root, *rel.split("/")); os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "wb") as f: f.write(content if isinstance(content, bytes) else content.encode())
+                os.utime(path, (T0 + age, T0 + age))
+            org.ml.order.append(name); org.ml.mods[name] = Mod(name, root)
+            if active: org.ml.active.add(name)
+        add_mod("Pandora_Output", {"meshes/animationdatasinglefile.txt": ("x", 0), "Engine.log": ("ok", 1),
+                                   "Pandora_Engine/ActiveMods.json": ('[{"code":"isffr","active":true,"priority":1},'
+                                                                      '{"code":"oldp","active":true,"priority":2}]', 0)})
+        add_mod("Ice Skating", {"Nemesis_Engine/mod/isffr/info.ini": ("name=Ice skating fixed\nauthor=x\n", -500)})
+        add_mod("New Behavior", {"meshes/actors/character/behaviors/0_master.hkx": ("b", 1000),
+                                 "Nemesis_Engine/mod/newp/info.ini": ("name=New Patch\n", 1000)})
+        add_mod("OAR Anims", {"meshes/actors/character/animations/OpenAnimationReplacer/a/x.hkx": ("a", 1000)})
+        add_mod("Step - TexGen_Output", {"textures/lod/rock.dds": ("t", 500)})
+        add_mod("Step - DynDOLOD_Output", {"DynDOLOD.esp": (plugin_bytes(["Skyrim.esm", "Gone.esp"], []), 0),
+                                           "meshes/lod/x.nif": ("m", 0)})
+        add_mod("Tex Mod", {"textures/rocks/rock.dds": ("r", 1100), "textures/rocks/old.dds.mohidden": ("h", 9000),
+                            "textures/effects/fx.dds": ("e", 1100)})
+        add_mod("Late Plugin", {"Late.esp": (plugin_bytes(["Skyrim.esm"], [(b"WRLD", 0x01000800)]), 2000)})
+        add_mod("Quest Plugin", {"Quest.esp": (plugin_bytes(["Skyrim.esm"], [(b"QUST", 0x01000800)]), 2000),
+                                 "Occlusion.esp": (plugin_bytes(["Skyrim.esm"], [(b"WRLD", 0x01000801)]), 2000)})
+        add_mod("Disabled Tex", {"textures/lod/z.dds": ("z", 3000)}, active=False)
+        add_mod("xEdit_Output", {"SSEEdit Cache/x.refcache": ("c", 4000)})
+        for pname in ("DynDOLOD.esp", "Late.esp"):
+            org.pl.order.append(pname); org.pl.st[pname] = mobase.PluginState.ACTIVE
+        with open(os.path.join(org.profilePath(), "modlist.txt"), "w") as f: f.write("+x\n")
+        os.utime(os.path.join(org.profilePath(), "modlist.txt"), (T0 + 3000, T0 + 3000))
+        e,t = call("check_outputs"); r=json.loads(t)
+        by = {x["mod"]: x for x in r.get("outputs", [])}
+        check("check_outputs finds and orders outputs, skips unknown ones",
+              not e and [x["mod"] for x in r["outputs"] if x["mod"]!="TexGen Output"]==["Step - TexGen_Output","Step - DynDOLOD_Output","Pandora_Output"]
+              and {"mod":"xEdit_Output","why":"not recognized as Pandora, PGPatcher, xLODGen, TexGen or DynDOLOD output"} in r["not_checked"])
+        pa = by["Pandora_Output"]
+        check("Pandora: behavior files and patches, not plain animations",
+              pa["made_by"]=="Pandora" and pa["verdict"]=="out of date: rerun Pandora"
+              and [c["mod"] for c in pa["changed_mods"]]==["New Behavior"] and pa["changed_mods"][0]["files"]==2
+              and pa["patches_in_last_run"]==["Ice skating fixed","oldp"] and pa["patches_gone"]==["oldp"]
+              and pa["patches_not_in_last_run"]==[{"patch":"New Patch","mod":"New Behavior"}]
+              and pa["profile_saved_after"]==["modlist.txt"])
+        dy = by["Step - DynDOLOD_Output"]
+        check("DynDOLOD: newer TexGen output and plugin, missing master, plugins after it",
+              dy["verdict"]=="out of date: rerun DynDOLOD"
+              and sorted(c["mod"] for c in dy["changed_mods"])==["Late Plugin","Step - TexGen_Output"]
+              and dy["reasons"][1]=="DynDOLOD.esp needs master(s) that are not enabled: Gone.esp"
+              and dy["plugins"]==[{"plugin":"DynDOLOD.esp","missing_masters":["Gone.esp"],"plugins_loading_after":["Late.esp"]}])
+        tg = by["Step - TexGen_Output"]
+        check("TexGen: texture mod newer, hidden files and disabled mods ignored, DynDOLOD output not counted",
+              [c["mod"] for c in tg["changed_mods"]]==["Tex Mod"] and tg["changed_mods"][0]["examples"]==["textures/rocks/rock.dds"])
+        e,t = call("check_outputs", {"names":["step - texgen_output"]}); r=json.loads(t)
+        check("plugin top-level groups are read", __import__("mo2_mcp.espm", fromlist=["x"]).read_plugin(
+              os.path.join(org.modsPath(), "Quest Plugin", "Quest.esp")).top_groups == {"QUST"})
+        check("check_outputs with a name checks just that mod", [x["mod"] for x in r["outputs"]]==["Step - TexGen_Output"])
+        os.utime(os.path.join(org.modsPath(), "Tex Mod", "textures", "rocks", "rock.dds"), (T0 - 10, T0 - 10))
+        os.utime(os.path.join(org.profilePath(), "modlist.txt"), (T0 - 10, T0 - 10))
+        e,t = call("check_outputs", {"names":["Step - TexGen_Output"]}); r=json.loads(t)
+        check("check_outputs: up to date", r["outputs"][0]["verdict"]=="up to date" and "changed_mods" not in r["outputs"][0])
+        cache=json.loads(P.TOOLS_CACHE.read_text()); check("tools cache written", len(cache)==28)
     except Exception as ex:
         import traceback; traceback.print_exc(); failures.append(repr(ex))
     finally:

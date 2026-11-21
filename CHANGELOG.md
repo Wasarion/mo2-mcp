@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.0
+
+- New tool `check_outputs` (closes #22): is generated output out of date? Output mods are found by name (containing "Output", or the names given) and recognized by their content as Pandora, PGPatcher, xLODGen, TexGen or DynDOLOD output (new module `outputs.py`). For each: when it was made (its newest file), the enabled mods with files that matter to that tool and are newer than it (with a count and examples; plugins count for xLODGen and DynDOLOD only when they hold worldspace or LOD object records, which `plugin_header`'s reader now also reports), whether the profile's mod list or load order was saved since, masters of its plugins that are no longer enabled, the plugins loading after them, and for Pandora the patches ticked in its last run compared with the ones installed now. A later step's output never makes an earlier step stale (TexGen output newer than PGPatcher's is fine), and files written within five minutes of the output count as the same run. It compares file times only and never reruns anything.
+
 ## 0.8.0
 
 - New tool `plugin_header` (closes #19): reads plugin files directly (new module `espm.py`, record headers only, so a whole load order takes seconds) and reports flags, header version, masters, record and new-record counts, the new FormID range and a light-plugin verdict: `already_light`, `flag_as_is` (no new records, or all in the light range), `needs_header_171`, `needs_compacting` (with the enabled plugins that use it as a master) or `too_many`, plus a caution for new cells or worldspaces. Without names it checks every enabled full plugin except Bethesda's own and counts full plugin slots; `candidates_only` keeps the ones that need no FormID changes. It never changes a file.
