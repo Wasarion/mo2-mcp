@@ -1092,6 +1092,16 @@ class Mo2Tools:
         return {n: _flag(ml.state(n), mobase.ModState.ACTIVE) for n in names}
 
     def set_mod_priority(self, args: dict[str, Any]) -> Any:
+        """Move a mod, then refresh: MO2 does not update which mod wins each file after a move made through
+        its plugin API until the next refresh (#34)."""
+        result = self.invoke(lambda: self._move_mod(args), 60)
+        result["refreshed"] = self._refresh_and_wait()
+        if not result["refreshed"]:
+            result["note"] = "Moved, but MO2 is still refreshing; file winners may be out of date until it finishes."
+        return result
+
+    def _move_mod(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Move a mod (GUI thread). Callers refresh MO2 afterwards."""
         ml = self.org.modList()
         name = self._mod_name(args["name"])
         target = args.get("priority")
@@ -1143,7 +1153,8 @@ class Mo2Tools:
             return {"separator": label, "note": "Created, but MO2 is still refreshing; place it later with set_mod_priority."}
         move = {k: args[k] for k in ("after", "priority") if args.get(k) is not None}
         if move:
-            return self.invoke(lambda: self.set_mod_priority({"name": internal, **move}), 60) | {"separator": label}
+            placed = self.invoke(lambda: self._move_mod({"name": internal, **move}), 60)
+            return placed | {"separator": label, "refreshed": self._refresh_and_wait()}
         return {"separator": label, "name": internal, "priority": self.invoke(lambda: self.org.modList().priority(internal), 60)}
 
     def list_profiles(self, args: dict[str, Any]) -> Any:
@@ -1329,10 +1340,12 @@ class Mo2Tools:
             return result | {"note": "Files moved, but MO2 is still refreshing; place and enable the mod later."}
         move = {k: args[k] for k in ("after", "priority") if args.get(k) is not None}
         if move:
-            result["priority"] = self.invoke(lambda: self.set_mod_priority({"name": target, **move}), 60)["priority"]
+            result["priority"] = self.invoke(lambda: self._move_mod({"name": target, **move}), 60)["priority"]
         if "enable" in args or not into:  # a new mod is enabled unless enable=false; an existing one keeps its state
             want = bool(args.get("enable", True))
             result["enabled"] = self.invoke(lambda: self.set_mods_enabled({"names": [target], "enabled": want}), 60)[target]
+        if move:
+            self._refresh_and_wait()  # file winners are stale after a move until MO2 refreshes (#34)
         if "priority" not in result:
             result["priority"] = self.invoke(lambda: self.org.modList().priority(target), 60)
         return result
@@ -1576,8 +1589,10 @@ class Mo2Tools:
                  {}, self.list_runs, main_thread=False),
             Tool("set_mods_enabled", "Enable or disable mods (left pane checkboxes).",
                  {"names": names, "enabled": b}, self.set_mods_enabled, ["names", "enabled"], writes=True),
-            Tool("set_mod_priority", "Move a mod: give 'priority' (number) or 'after' (place it directly below another mod or separator).",
-                 {"name": s, "priority": {"type": "integer"}, "after": s}, self.set_mod_priority, ["name"], writes=True),
+            Tool("set_mod_priority", "Move a mod: give 'priority' (number) or 'after' (place it directly below another mod or "
+                 "separator). Refreshes MO2 afterwards so file conflicts are up to date.",
+                 {"name": s, "priority": {"type": "integer"}, "after": s}, self.set_mod_priority, ["name"], writes=True,
+                 main_thread=False, timeout=REFRESH_WAIT + 70),
             Tool("set_plugins_enabled", "Enable or disable plugins (right pane checkboxes).",
                  {"names": names, "enabled": b}, self.set_plugins_enabled, ["names", "enabled"], writes=True),
             Tool("set_plugin_priority", "Move a plugin to a priority (position in the right pane).",

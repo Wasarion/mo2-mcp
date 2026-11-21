@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.13.1
+
+- `set_mod_priority` refreshes MO2 after moving a mod (closes #34). A move made through MO2's plugin API changes the order, but MO2 keeps showing the old winner of each conflicting file until the next refresh, so `file_origins`, `get_mod_conflicts` and the other checks gave old answers right after a move. `create_separator` and `create_mod_from_overwrite` refresh after placing a mod too. Enabling or disabling mods is not affected (MO2 updates that at once).
+
 ## 0.13.0
 
 - New tool `read_crash_log` (closes #26): reads Crash Logger's `crash-*.log` from My Games (the newest, or the one named in `file`; new module `crashlog.py`). It shows the exception and the module it happened in, the thread's likely role, the probable call stack with each DLL mapped to the mod that provides it (the game and Windows, runtime and driver modules are marked, not blamed), the plugins and meshes/textures named in the relevant objects with the mods that provide them, and a short list of suspect mods scored by how early and how often they appear (first mod DLL in the probable stack 3, another probable frame or a named mesh/texture 2, each repeat in the probable stack, a stack-scan frame or a named plugin 1). Older crash logs are listed with their exception and first mod DLL, to see whether a crash repeats. It only reads files and does not guess fixes.

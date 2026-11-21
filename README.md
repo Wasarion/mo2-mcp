@@ -24,7 +24,7 @@ The assistant reads and changes MO2 through MO2's own plugin interface, so every
 
 No extra software is needed: the plugin runs on MO2's own Python, and the bridge to the AI app is a PowerShell script that comes with Windows.
 
-> Status: v0.13.0, a personal learning project. Every tool has been tested on a live MO2 2.5.2 with Skyrim Special Edition 1.7.104. Feedback and pull requests welcome.
+> Status: v0.13.1, a personal learning project. Every tool has been tested on a live MO2 2.5.2 with Skyrim Special Edition 1.7.104. Feedback and pull requests welcome.
 
 ## How it works
 
@@ -53,7 +53,7 @@ AI client ⇄ (stdio) ⇄ bridge.ps1 ⇄ (HTTP, 127.0.0.1 + token) ⇄ mo2_mcp p
 | `read_crash_log` | The newest Crash Logger crash log (or one you name): the exception, the probable call stack with each DLL mapped to its mod, the plugins and meshes/textures in the relevant objects mapped to their mods, a short ranked list of suspect mods, and older crash logs to see whether a crash repeats. Reads only |
 | `read_log` | Last lines of a log: MO2's own or usvfs, or a tool run through MO2 — DynDOLOD, TexGen, xLODGen and xEdit (last session only, found from the configured executables; for xEdit also what Quick Auto Clean removed, for DynDOLOD its summary topics and any `bugreport.txt`), Pandora's `Engine.log`, LOOT, or any SKSE plugin's log. Filters: text, warnings and errors only |
 | `list_executables` | Executables configured in MO2 |
-| `set_mods_enabled` / `set_mod_priority` | Enable/disable and move mods (`priority` or `after` another mod/separator) |
+| `set_mods_enabled` / `set_mod_priority` | Enable/disable and move mods (`priority` or `after` another mod/separator); a move refreshes MO2 so file conflicts are right straight away |
 | `set_plugins_enabled` / `set_plugin_priority` | Enable/disable and move plugins |
 | `refresh` | Refresh MO2 (F5) and wait until it has finished |
 | `create_separator` / `rename_mod` | Add a separator (optionally placed), rename mods and separators |
