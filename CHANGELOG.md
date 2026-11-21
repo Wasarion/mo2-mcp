@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.0
+
+- New tool `list_skse_plugins` (closes #18): every `SKSE/Plugins/*.dll` in the mods folder and the game's Data folder, with its mod and whether that mod is enabled, whether another mod's copy wins, and whether it loaded in the last game start. The last part comes from SKSE's own `skse64.log` (in My Games), which SKSE 2.3 writes per DLL with the plugin's name and version or the reason it was not loaded. Also shows each DLL's file version and lists DLLs in the log that no mod provides. Filters: text, `enabled_only`, `problems_only`.
+
 ## 0.6.0
 
 - New tool `list_notifications` (closes #4, with `read_log` from 0.2.0): MO2's notifications, the list behind the warning-triangle button, with each problem's details and whether MO2 offers a guided fix. MO2 gives plugins no access to that list, so the tool opens MO2's own notifications window, reads it and closes it again; you may see it flash. It does nothing when MO2 counts no notifications, and refuses while another dialog is open or MO2 is locked.

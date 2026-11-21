@@ -72,8 +72,13 @@ class PluginList:
 class Game:
     def gameName(s): return "Skyrim Special Edition"
     def gameVersion(s): return "1.6.1170"
+    def __init__(s, root="/tmp"): s.root = root
     def gameDirectory(s):
         from PyQt6.QtCore import QDir; return QDir("/game")
+    def dataDirectory(s):
+        from PyQt6.QtCore import QDir; return QDir(os.path.join(s.root, "gamedata"))
+    def documentsDirectory(s):
+        from PyQt6.QtCore import QDir; return QDir(os.path.join(s.root, "docs"))
 
 class Profile:
     def localSavesEnabled(s): return True
@@ -93,7 +98,7 @@ class Org:
             f.write("[customExecutables]\nsize=2\n1\\title=SSEEdit\n1\\binary=H:/Tools/SSEEdit/SSEEdit.exe\n1\\arguments=\n1\\workingDirectory=\n2\\title=LOOT\n2\\binary=H:/Tools/LOOT/LOOT.exe\n2\\arguments=\n2\\workingDirectory=\n")
     def modList(s): return s.ml
     def pluginList(s): return s.pl
-    def managedGame(s): return Game()
+    def managedGame(s): return Game(s.root)
     def profile(s): return Profile()
     def appVersion(s): return mobase.VersionInfo("2.5.2")
     def basePath(s): return s.root
@@ -216,7 +221,7 @@ def client():
         except urllib.error.HTTPError as e: code = e.code
         check("browser Origin -> 403", code==403)
         st,r = rpc("tools/list"); names=[t["name"] for t in r["result"]["tools"]]
-        check("tools/list has 25 tools", len(names)==25)
+        check("tools/list has 26 tools", len(names)==26)
         e,t = call("get_status"); s=json.loads(t)
         check("get_status counts", not e and s["mods"]=={"total":4,"enabled":3,"separators":2} and s["plugins"]["enabled"]==3)
         e,t = call("list_mods", {"separator":"Fixes"}); print(t)
@@ -340,7 +345,48 @@ def client():
         check("wait_for_download still not finished", not e and json.loads(t)["status"]=="not finished")
         e,t = call("wait_for_download", {"download_id":99}); check("wait for unknown download refused", e and "Unknown" in t)
         e,t = call("download_mod", {"mod_id":0,"file_id":5}); check("bad mod id refused", e and "positive" in t)
-        cache=json.loads(P.TOOLS_CACHE.read_text()); check("tools cache written", len(cache)==25)
+        # -- SKSE plugins --
+        from mo2_mcp.skse import parse_skse_log
+        sample = parse_skse_log("SKSE64 runtime: initialize (version = 2.3.1 01070680 01DD, os = 6.2 (9200))\n"
+            "plugin DP_Extender.dll (00000001 DP_Extender - Dynamic Potions Extender (by egocarib) 00000002) loaded correctly (handle 10)\n"
+            "plugin msdia140.dll (00000000  00000000) no version data 0 (handle 0)\n"
+            "couldn't load plugin Bad.dll (Error 126)")
+        dp, ms, bad = sample.entries["dp_extender.dll"], sample.entries["msdia140.dll"], sample.entries["bad.dll"]
+        check("SKSE log parser: names with brackets, failures, version",
+              sample.skse_version=="2.3.1" and dp.loaded and dp.name=="DP_Extender - Dynamic Potions Extender (by egocarib)" and dp.version=="2 (0x00000002)"
+              and not ms.loaded and ms.result=="no version data 0" and ms.helper and not dp.helper and not bad.loaded and "Error 126" in bad.result)
+        def dll(folder, *rel):
+            path = os.path.join(folder, *rel); os.makedirs(os.path.dirname(path), exist_ok=True); open(path, "w").close()
+        mods = org.modsPath()
+        dll(mods, "SSE Engine Fixes", "SKSE", "Plugins", "EngineFixes.dll")
+        dll(mods, "SSE Engine Fixes", "SKSE", "Plugins", "New.dll")
+        dll(mods, "SKSE", "SKSE", "Plugins", "EngineFixes.dll")
+        dll(mods, "Address Library", "SKSE", "Plugins", "Broken.dll")
+        dll(mods, "Unused", "skse", "plugins", "Old.dll")
+        org.ml.active.discard("Unused")
+        dll(os.path.join(tmp, "gamedata"), "SKSE", "Plugins", "Base.dll")
+        os.makedirs(os.path.join(tmp, "docs", "SKSE"), exist_ok=True)
+        e,t = call("list_skse_plugins"); check("no SKSE log yet is reported", not e and json.loads(t)["skse_log"].startswith("not found"))
+        with open(os.path.join(tmp, "docs", "SKSE", "skse64.log"), "w") as f:
+            f.write("SKSE64 runtime: initialize (version = 2.3.1 01070680 01DD79A2B00F2F7D, os = 6.2 (9200))\n"
+                    "checking plugin Base.dll\nchecking plugin Broken.dll\nchecking plugin EngineFixes.dll\nchecking plugin Gone.dll\n"
+                    "plugin Base.dll (00000001 Base 01000000) loaded correctly (handle 1)\n"
+                    "plugin Broken.dll (00000001 Broken Thing 01000000) reported as incompatible during query (handle 2)\n"
+                    "plugin EngineFixes.dll (00000001 EngineFixes 07000000) loaded correctly (handle 3)\n")
+        e,t = call("list_skse_plugins"); r=json.loads(t)
+        by = {(x["dll"], x["mod"]): x for x in r["plugins"]}
+        check("SKSE overview: loaded, overridden, failed, missing from log, disabled, game folder",
+              not e and r["skse_version"]=="2.3.1" and r["summary"]=={"dlls":6,"in_enabled_mods":4,"loaded":2,"problems":2,"in_disabled_mods":1}
+              and by[("EngineFixes.dll","SSE Engine Fixes")]["status"]=="loaded" and by[("EngineFixes.dll","SSE Engine Fixes")]["version"]=="7.0.0 (0x07000000)"
+              and by[("EngineFixes.dll","SKSE")]["status"]=="overridden by SSE Engine Fixes"
+              and by[("Broken.dll","Address Library")]["status"]=="not loaded: reported as incompatible during query"
+              and by[("New.dll","SSE Engine Fixes")]["status"].startswith("not in the SKSE log")
+              and by[("Old.dll","Unused")]["status"]=="mod disabled"
+              and by[("Base.dll","(game Data folder)")]["status"]=="loaded"
+              and r["in_log_but_not_found"]==["Gone.dll"])
+        e,t = call("list_skse_plugins", {"problems_only":True}); check("SKSE problems_only", sorted(x["dll"] for x in json.loads(t)["plugins"])==["Broken.dll","New.dll"])
+        e,t = call("list_skse_plugins", {"enabled_only":True,"filter":"engine"}); check("SKSE filters (text matches DLL or mod name)", len(json.loads(t)["plugins"])==3)
+        cache=json.loads(P.TOOLS_CACHE.read_text()); check("tools cache written", len(cache)==26)
     except Exception as ex:
         import traceback; traceback.print_exc(); failures.append(repr(ex))
     finally:

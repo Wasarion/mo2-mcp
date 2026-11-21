@@ -10,6 +10,7 @@ You can ask things like:
 - "Turn on everything under the Extenders separator and put Address Library right after the separator."
 - "Run xEdit Quick Auto Clean, wait until it finishes, then move what it wrote in Overwrite into the xEdit_Output mod."
 - "DynDOLOD is done: make a mod called DynDOLOD Output from Overwrite and put it under my LOD separator."
+- "Did all my SKSE plugins load the last time I started the game?"
 - "Switch to my Mod Dev profile." / "What is MO2 warning me about?"
 
 The assistant reads and changes MO2 through MO2's own plugin interface, so everything it does is exactly what you would have clicked, and MO2 keeps its own files consistent.
@@ -18,7 +19,7 @@ The assistant reads and changes MO2 through MO2's own plugin interface, so every
 
 No extra software is needed: the plugin runs on MO2's own Python, and the bridge to the AI app is a PowerShell script that comes with Windows.
 
-> Status: v0.6.0, a personal learning project. Every tool has been tested on a live MO2 2.5.2 with Skyrim Special Edition 1.7.104. Feedback and pull requests welcome.
+> Status: v0.7.0, a personal learning project. Every tool has been tested on a live MO2 2.5.2 with Skyrim Special Edition 1.7.104. Feedback and pull requests welcome.
 
 ## How it works
 
@@ -40,6 +41,7 @@ AI client ⇄ (stdio) ⇄ bridge.ps1 ⇄ (HTTP, 127.0.0.1 + token) ⇄ mo2_mcp p
 | `get_mod` | Version, Nexus id, notes, plugins and (optionally) file list of one mod |
 | `file_origins` | Which mod wins a file in the virtual Data folder, and which it overrides |
 | `get_mod_conflicts` | Loose-file conflicts of one mod: which mods it overrides and which override it, with examples |
+| `list_skse_plugins` | Every SKSE plugin DLL in your mods (enabled or not) and the game's Data folder: its mod, whether another copy wins, and whether it loaded in the last game start (read from `skse64.log`, with the plugin's name and version) |
 | `read_log` | Last lines of MO2's log or the newest usvfs log, optionally filtered |
 | `list_executables` | Executables configured in MO2 |
 | `set_mods_enabled` / `set_mod_priority` | Enable/disable and move mods (`priority` or `after` another mod/separator) |
