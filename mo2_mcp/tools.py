@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import QApplication, QComboBox, QDialog, QMainWindow, QTree
 
 from .mcp import Tool, ToolError
 from .espm import light_verdict, read_plugin
-from . import loot, outputs, toollogs
+from . import crashlog, loot, outputs, toollogs
 from .cshaders import ini_version, parse_cs_log
 from .procs import RunTracker
 from .skse import dll_file_version, parse_skse_log
@@ -609,6 +609,140 @@ class Mo2Tools:
             result["log_warnings"] = log.warnings[:40]
         if caches:
             result["shader_cache"] = caches
+        return result
+
+    def read_crash_log(self, args: dict[str, Any]) -> Any:
+        game = self.org.managedGame()
+        folder = os.path.join(game.documentsDirectory().absolutePath(), "SKSE")
+        try:
+            names = [f for f in os.listdir(folder) if f.lower().startswith("crash-") and f.lower().endswith(".log")]
+        except OSError:
+            names = []
+        names.sort(key=lambda f: os.path.getmtime(os.path.join(folder, f)), reverse=True)
+        if not names:
+            return {"crash_logs": [], "note": f"No crash logs in {folder}. Crash Logger (SSE AE VR) writes "
+                                              "crash-<date>.log there when the game crashes."}
+        wanted = str(args.get("file", "")).strip()
+        if wanted:
+            name = next((f for f in names if f.lower() == wanted.lower()), None)
+            if name is None:
+                raise ToolError(f"No crash log named '{wanted}'. Newest: {', '.join(names[:5])}")
+        else:
+            name = names[0]
+
+        def load(fname: str) -> crashlog.CrashLog:
+            with open(os.path.join(folder, fname), encoding="utf-8", errors="replace") as f:
+                return crashlog.parse(f.read())
+
+        crash = load(name)
+        game_dir = game.gameDirectory().absolutePath()
+        dll_mod: dict[str, str | None] = {}
+
+        def mod_of_dll(module: str) -> str | None:
+            key = module.lower()
+            if key not in dll_mod:
+                origins = list(self.org.getFileOrigins(os.path.join("SKSE", "Plugins", module)))
+                if origins:
+                    dll_mod[key] = "(game Data folder)" if origins[0] == "data" else origins[0]
+                elif os.path.isfile(os.path.join(game_dir, module)):
+                    dll_mod[key] = "(game folder)"
+                else:
+                    dll_mod[key] = None
+            return dll_mod[key]
+
+        suspects: dict[str, dict[str, Any]] = {}
+
+        def suspect(mod: str, points: int, why: str) -> None:
+            entry = suspects.setdefault(mod, {"mod": mod, "score": 0, "why": []})
+            entry["score"] += points
+            if " times in the probable call stack" in why:  # keep only the latest count
+                entry["why"] = [w for w in entry["why"] if " times in the probable call stack" not in w]
+            if why not in entry["why"]:
+                entry["why"].append(why)
+
+        stack: list[dict[str, Any]] = []
+        seen_modules: set[str] = set()
+        repeats: dict[str, int] = {}
+        first_mod_frame = True
+        for frame in crash.frames:
+            module = frame.module
+            if crashlog.is_game(module):
+                kind, mod = "game", None
+            elif crashlog.is_system(module):
+                kind, mod = "Windows, runtime or driver", None
+            else:
+                mod = mod_of_dll(module)
+                kind = "mod" if mod else "not found in the mods"
+            if frame.probable and (not stack or stack[-1]["module"] != module) and len(stack) < 25:
+                row: dict[str, Any] = {"frame": frame.index, "module": module, "kind": kind}
+                if mod:
+                    row["mod"] = mod
+                if frame.source:
+                    row["source"] = frame.source
+                stack.append(row)
+            if not mod:
+                continue
+            where = f"{module} (frame {frame.index}" + (f", {frame.source})" if frame.source else ")")
+            if module.lower() not in seen_modules:
+                seen_modules.add(module.lower())
+                if frame.probable and first_mod_frame:
+                    suspect(mod, 3, "first mod DLL in the probable call stack: " + where)
+                    first_mod_frame = False
+                else:
+                    suspect(mod, 2 if frame.probable else 1,
+                            ("in the probable call stack: " if frame.probable else "found by the stack scan: ") + where)
+            elif frame.probable:
+                repeats[module.lower()] = repeats.get(module.lower(), 1) + 1
+                suspect(mod, 1, f"{module} appears {repeats[module.lower()]} times in the probable call stack")
+
+        pl = self.org.pluginList()
+        official = re.compile(r"^(skyrim|update|dawnguard|hearthfires|dragonborn)\.esm$|^cc.*\.es[lm]$", re.IGNORECASE)
+        plugins = []
+        for plugin in crash.plugins:
+            origin = pl.origin(plugin) if plugin in pl.pluginNames() else ""
+            plugins.append({"plugin": plugin, "mod": origin or "not in the load order"})
+            if origin and origin != "data" and not official.match(plugin):
+                suspect(origin, 1, f"its plugin {plugin} is named in the relevant objects")
+        files = []
+        for rel in crash.files:
+            origins = list(self.org.getFileOrigins(rel))
+            winner = origins[0] if origins else None
+            files.append({"file": rel, "mod": winner or "not loose (in a BSA, or missing)"})
+            if winner and winner != "data":
+                suspect(winner, 2, f"provides {rel}, named in the relevant objects")
+
+        result: dict[str, Any] = {
+            "file": os.path.join(folder, name),
+            "crash_time": crash.time,
+            "game": crash.game,
+            "crash_logger": crash.logger,
+            "exception": crash.exception,
+            "in_module": crash.exception_module,
+        }
+        if crash.role:
+            result["thread_role"] = crash.role
+        result["suspects"] = sorted(suspects.values(), key=lambda e: -e["score"])[:10]
+        result["probable_call_stack"] = stack
+        if crash.objects:
+            result["relevant_objects"] = crash.objects[:25]
+        if plugins:
+            result["plugins_in_objects"] = plugins
+        if files:
+            result["files_in_objects"] = files
+        others = []
+        for other in names[:11]:
+            if other == name:
+                continue
+            o = load(other)
+            first = next((f.module for f in o.frames if f.probable and not crashlog.is_game(f.module)
+                          and not crashlog.is_system(f.module)), None)
+            others.append({"file": other, "exception": o.exception, "in_module": o.exception_module,
+                           "first_mod_dll": first})
+        if others:
+            result["other_crash_logs"] = others
+        result["note"] = ("Suspects are ranked by how early and how often a mod shows up in the log: a place to start "
+                          "looking, not proof. The game's own frames (SkyrimSE.exe) and Windows/driver modules are "
+                          "never scored.")
         return result
 
     def plugin_header(self, args: dict[str, Any]) -> Any:
@@ -1421,6 +1555,11 @@ class Mo2Tools:
                  "CommunityShaders.log, and the shader cache. problems_only keeps features with problems or "
                  "overridden copies. Reads files only.",
                  {"problems_only": b}, self.check_community_shaders),
+            Tool("read_crash_log", "Read the newest Crash Logger crash log (or 'file'): the exception, the probable call "
+                 "stack with each DLL mapped to the mod that provides it, plugins and meshes/textures named in the "
+                 "relevant objects mapped to their mods, a short ranked list of suspect mods, and the older crash "
+                 "logs with their first mod DLL to see whether a crash repeats. Reads files only.",
+                 {"file": s}, self.read_crash_log),
             Tool("plugin_header", "Read plugin files directly: flags, header version, masters, record and new-record counts, and "
                  "whether each could be a light (ESL) plugin. Without names: every enabled plugin that isn't light yet "
                  "(Bethesda's own files skipped), with a count of full plugin slots. candidates_only keeps those that can "
