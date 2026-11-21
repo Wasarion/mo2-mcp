@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import QApplication, QComboBox, QDialog, QMainWindow, QTree
 from .mcp import Tool, ToolError
 from .espm import light_verdict, read_plugin
 from . import outputs
+from .cshaders import ini_version, parse_cs_log
 from .procs import RunTracker
 from .skse import dll_file_version, parse_skse_log
 
@@ -453,6 +454,161 @@ class Mo2Tools:
             result["note"] = "Loaded/not loaded is from the last game start; mods changed since then are not reflected."
         if only_in_log:
             result["in_log_but_not_found"] = only_in_log
+        return result
+
+    def check_community_shaders(self, args: dict[str, Any]) -> Any:
+        ml = self.org.modList()
+        game = self.org.managedGame()
+        log_path = os.path.join(game.documentsDirectory().absolutePath(), "SKSE", "CommunityShaders.log")
+        log = None
+        log_time = 0.0
+        if os.path.isfile(log_path):
+            with open(log_path, encoding="utf-8", errors="replace") as f:
+                log = parse_cs_log(f.read())
+            log_time = os.path.getmtime(log_path)
+
+        def fmt(t: float) -> str:
+            return time.strftime("%Y-%m-%d %H:%M", time.localtime(t))
+
+        sources: list[tuple[str, str, bool]] = []  # (mod, folder, enabled)
+        for name in self._mods_in_order():
+            mod = ml.getMod(name)
+            if not mod.isSeparator():
+                sources.append((name, mod.absolutePath(), _flag(ml.state(name), mobase.ModState.ACTIVE)))
+        data_name = "(game Data folder)"
+        sources.append((data_name, game.dataDirectory().absolutePath(), True))
+
+        def origin(rel: str) -> str | None:
+            found = list(self.org.getFileOrigins(rel))
+            if not found:
+                return None
+            return data_name if found[0] == "data" else found[0]
+
+        # -- core DLL
+        dll_rel = os.path.join("SKSE", "Plugins", "CommunityShaders.dll")
+        core = origin(dll_rel)
+        dll_copies = []
+        core_dll_time = 0.0
+        for name, folder, enabled in sources:
+            plugins_dir = _child_dir(folder, "SKSE", "Plugins")
+            dll = next((f for f in os.listdir(plugins_dir) if f.lower() == "communityshaders.dll"), None) if plugins_dir else None
+            if plugins_dir is None or dll is None:
+                continue
+            path = os.path.join(plugins_dir, dll)
+            copy: dict[str, Any] = {"mod": name, "mod_enabled": enabled}
+            file_version = dll_file_version(path)
+            if file_version:
+                copy["file_version"] = file_version
+            if name == core:
+                copy["wins"] = True
+                st = os.stat(path)
+                core_dll_time = max(st.st_mtime, getattr(st, "st_birthtime", 0.0))
+            dll_copies.append(copy)
+        problems: list[str] = []
+        if core is None:
+            problems.append("CommunityShaders.dll is not in any enabled mod.")
+        enabled_dlls = [c["mod"] for c in dll_copies if c["mod_enabled"]]
+        if len(enabled_dlls) > 1:
+            problems.append(f"{len(enabled_dlls)} enabled mods contain CommunityShaders.dll ({', '.join(enabled_dlls)}); "
+                            f"only {core}'s is used, but their feature files and shaders mix too.")
+
+        # -- feature .ini files: every copy in enabled mods, and which one wins
+        copies: dict[str, list[tuple[str, str | None]]] = collections.defaultdict(list)  # lower name -> (mod, version)
+        names: dict[str, str] = {}
+        for name, folder, enabled in sources:
+            features_dir = _child_dir(folder, "Shaders", "Features")
+            if not enabled or features_dir is None:
+                continue
+            for f in sorted(os.listdir(features_dir)):
+                if not f.lower().endswith(".ini"):
+                    continue
+                feature = f[:-4]
+                try:
+                    with open(os.path.join(features_dir, f), encoding="utf-8-sig", errors="replace") as fh:
+                        version = ini_version(fh.read())
+                except OSError:
+                    version = None
+                names.setdefault(feature.lower(), feature)
+                copies[feature.lower()].append((name, version))
+        if log:
+            for key, name in log.names.items():
+                names.setdefault(key, name)
+
+        rows: list[dict[str, Any]] = []
+        for key in sorted(names):
+            feature = names[key]
+            row: dict[str, Any] = {"feature": feature}
+            winner = origin(os.path.join("Shaders", "Features", feature + ".ini")) if key in copies else None
+            versions = dict(copies.get(key, []))
+            if winner is not None:
+                row["mod"] = winner
+                row["version"] = versions.get(winner)
+            others = [{"mod": m, "version": v} for m, v in copies.get(key, []) if m != winner]
+            if others:
+                row["other_copies"] = others
+            if core is not None and winner is not None and winner != core and core in versions \
+                    and versions[core] != versions.get(winner):
+                row["problem"] = (f"{winner} ({versions.get(winner)}) overrides the version that comes with "
+                                  f"Community Shaders ({versions[core]}); usually that mod should be removed or "
+                                  "placed above the core.")
+            if log is None:
+                row["last_start"] = "no log yet"
+            elif key in log.features:
+                status, detail = log.features[key]
+                row["last_start"] = status
+                if status == "loaded" and winner is not None and detail != row.get("version"):
+                    row["last_start"] = f"loaded version {detail}; the .ini has changed since"
+                elif status in ("not loaded", "obsolete", "unknown"):
+                    row.setdefault("problem", detail)
+                elif status == "not installed" and winner is not None:
+                    row["last_start"] = "not installed then; added since"
+            elif winner is not None:
+                row["last_start"] = "not in the log (added after the last game start?)"
+            rows.append(row)
+        problems += [f"{r['feature']}: {r['problem']}" for r in rows if r.get("problem")]
+
+        # -- shader cache: compiled shaders kept between starts
+        caches = []
+        for name, folder in [(n, f) for n, f, on in sources if on] + [("(Overwrite)", self.org.overwritePath())]:
+            cache_dir = _child_dir(folder, "ShaderCache")
+            if cache_dir is None:
+                continue
+            count, newest = 0, 0.0
+            for dirpath, _, files in os.walk(cache_dir):
+                for f in files:
+                    count += 1
+                    newest = max(newest, os.path.getmtime(os.path.join(dirpath, f)))
+            cache: dict[str, Any] = {"mod": name, "files": count}
+            if count:
+                cache["newest"] = fmt(newest)
+                if core_dll_time and newest < core_dll_time:
+                    cache["note"] = "older than the installed CommunityShaders.dll"
+            caches.append(cache)
+
+        result: dict[str, Any] = {
+            "core": {"mod": core, "dll_copies": dll_copies},
+            "summary": {
+                "features": len(rows),
+                "loaded_last_start": sum(1 for r in rows if r.get("last_start") == "loaded"),
+                "problems": len(problems),
+            },
+        }
+        if log:
+            result["core"]["log_version"] = log.version
+            result["core"]["log_written"] = fmt(log_time)
+            if core_dll_time > log_time:
+                result["core"]["note"] = "The DLL is newer than the log: start the game once to see its status."
+        else:
+            result["core"]["log"] = f"not found: {log_path}"
+        if problems:
+            result["problems"] = problems
+        if args.get("problems_only"):
+            rows = [r for r in rows if r.get("problem") or "other_copies" in r]
+        result["features"] = rows
+        if log and log.warnings:
+            result["log_warnings"] = log.warnings[:40]
+        if caches:
+            result["shader_cache"] = caches
         return result
 
     def plugin_header(self, args: dict[str, Any]) -> Any:
@@ -1096,6 +1252,12 @@ class Mo2Tools:
                  "whether another mod's copy wins, and whether it loaded in the last game start (from skse64.log, with the "
                  "plugin's name and version). Filters: text, enabled_only, problems_only.",
                  {"filter": s, "enabled_only": b, "problems_only": b}, self.list_skse_plugins),
+            Tool("check_community_shaders", "Community Shaders check: which mod provides CommunityShaders.dll (and "
+                 "other copies), every feature .ini with its version and winning mod, feature files overriding the "
+                 "core's own version, each feature's status at the last game start and the warnings from "
+                 "CommunityShaders.log, and the shader cache. problems_only keeps features with problems or "
+                 "overridden copies. Reads files only.",
+                 {"problems_only": b}, self.check_community_shaders),
             Tool("plugin_header", "Read plugin files directly: flags, header version, masters, record and new-record counts, and "
                  "whether each could be a light (ESL) plugin. Without names: every enabled plugin that isn't light yet "
                  "(Bethesda's own files skipped), with a count of full plugin slots. candidates_only keeps those that can "

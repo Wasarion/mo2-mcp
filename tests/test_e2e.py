@@ -222,7 +222,7 @@ def client():
         except urllib.error.HTTPError as e: code = e.code
         check("browser Origin -> 403", code==403)
         st,r = rpc("tools/list"); names=[t["name"] for t in r["result"]["tools"]]
-        check("tools/list has 28 tools", len(names)==28)
+        check("tools/list has 29 tools", len(names)==29)
         e,t = call("get_status"); s=json.loads(t)
         check("get_status counts", not e and s["mods"]=={"total":4,"enabled":3,"separators":2} and s["plugins"]["enabled"]==3)
         e,t = call("list_mods", {"separator":"Fixes"}); print(t)
@@ -502,7 +502,47 @@ def client():
         os.utime(os.path.join(org.profilePath(), "modlist.txt"), (T0 - 10, T0 - 10))
         e,t = call("check_outputs", {"names":["Step - TexGen_Output"]}); r=json.loads(t)
         check("check_outputs: up to date", r["outputs"][0]["verdict"]=="up to date" and "changed_mods" not in r["outputs"][0])
-        cache=json.loads(P.TOOLS_CACHE.read_text()); check("tools cache written", len(cache)==28)
+        # -- Community Shaders --
+        e,t = call("check_community_shaders"); r=json.loads(t)
+        check("CS check without CS installed", not e and r["core"]["mod"] is None and r["features"]==[]
+              and r["core"]["log"].startswith("not found"))
+        add_mod("CS Old", {"SKSE/Plugins/CommunityShaders.dll": ("old", 0)}, active=False)
+        add_mod("CS Core", {"SKSE/Plugins/CommunityShaders.dll": ("dll", 0),
+                            "Shaders/Features/Alpha.ini": ("[Info]\nVersion = 1-2-0\n", 0),
+                            "Shaders/Features/Beta.ini": ("[Info]\nVersion = 2-0-0\n", 0),
+                            "Shaders/Features/Zed.ini": ("[Info]\nVersion = 0-1-0\n", 0)})
+        add_mod("Beta Old", {"Shaders/Features/Beta.ini": ("[Info]\nVersion = 1-0-0\n", 0)})
+        add_mod("Gamma", {"Shaders/Features/Gamma.ini": ("[Info]\nVersion = 1-0-0\n", 0)})
+        os.makedirs(os.path.join(org.overwritePath(), "ShaderCache", "Lighting"), exist_ok=True)
+        open(os.path.join(org.overwritePath(), "ShaderCache", "Lighting", "x.bin"), "w").close()
+        with open(os.path.join(tmp, "docs", "SKSE", "CommunityShaders.log"), "w") as f:
+            f.write("[12:51:51.197] [6896 ] [I] CommunityShaders v2-0-0-0\n"
+                    "[12:51:51.197] [6896 ] [I] Community Shaders 2.0.0 | branch: dev\n"
+                    "[12:51:51.263] [6896 ] [W] 5 old-format override file(s) in CommunityShaders/Overrides are not compatible anymore.\n"
+                    "[12:51:51.282] [6896 ] [I] Alpha.ini 1-2-0 successfully loaded\n"
+                    "[12:51:51.282] [6896 ] [I] Beta.ini 1-0-0 successfully loaded\n"
+                    "[12:51:51.282] [6896 ] [I] Delta.ini failed to load, feature disabled\n"
+                    "[12:51:51.300] [6896 ] [I] Feature 'Epsilon' is disabled at boot.\n"
+                    "[12:51:51.300] [6896 ] [W] Zed 0-1-0 is an old feature version, required: 1-0-0\n")
+        e,t = call("check_community_shaders"); r=json.loads(t)
+        by = {x["feature"]: x for x in r["features"]}
+        check("CS core DLL: winner and other copies",
+              not e and r["core"]["mod"]=="CS Core" and r["core"]["log_version"]=="2-0-0-0"
+              and [(c["mod"], c["mod_enabled"], c.get("wins", False)) for c in r["core"]["dll_copies"]]==[("CS Old",False,False),("CS Core",True,True)])
+        check("CS features: versions, winners, override of the core's version",
+              by["Alpha"]=={"feature":"Alpha","mod":"CS Core","version":"1-2-0","last_start":"loaded"}
+              and by["Beta"]["mod"]=="Beta Old" and by["Beta"]["version"]=="1-0-0"
+              and by["Beta"]["other_copies"]==[{"mod":"CS Core","version":"2-0-0"}] and "overrides the version" in by["Beta"]["problem"]
+              and by["Gamma"]["last_start"].startswith("not in the log"))
+        check("CS log statuses: not installed, disabled at boot, old version",
+              by["Delta"]=={"feature":"Delta","last_start":"not installed"} and by["Epsilon"]["last_start"]=="disabled at boot"
+              and by["Zed"]["last_start"]=="not loaded" and "old feature version" in by["Zed"]["problem"]
+              and r["summary"]=={"features":6,"loaded_last_start":2,"problems":2}
+              and r["log_warnings"][0].startswith("[W] 5 old-format override"))
+        check("CS shader cache found in Overwrite", r["shader_cache"][0]["mod"]=="(Overwrite)" and r["shader_cache"][0]["files"]==1)
+        e,t = call("check_community_shaders", {"problems_only":True})
+        check("CS problems_only", sorted(x["feature"] for x in json.loads(t)["features"])==["Beta","Zed"])
+        cache=json.loads(P.TOOLS_CACHE.read_text()); check("tools cache written", len(cache)==29)
     except Exception as ex:
         import traceback; traceback.print_exc(); failures.append(repr(ex))
     finally:
